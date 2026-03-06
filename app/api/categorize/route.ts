@@ -240,7 +240,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 })
                 const batch = rows.map(mapBookmarkForCategorization)
                 try {
-                  const results = await categorizeBatch(batch, anthropicApiKey, categoryDescriptions, allSlugs)
+                  const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
                   await writeCategoryResults(results)
                   counts.categorized += ids.length
                   setState({ stageCounts: { ...counts } })

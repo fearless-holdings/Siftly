@@ -334,31 +334,38 @@ function ModelSelector({
   const selected = models.find((m) => m.value === value) ?? models[0]
 
   return (
-    <div className="flex items-center gap-2 mt-2.5">
-      <span className="text-xs text-zinc-500 shrink-0">Model:</span>
-      <div className="relative flex-1">
-        <select
-          value={value}
-          onChange={(e) => void handleChange(e.target.value)}
-          className="w-full appearance-none pl-3 pr-8 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
-        >
-          {models.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label} — {m.description}
-            </option>
-          ))}
-        </select>
-        <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+    <>
+      <div className="flex items-center gap-2 mt-2.5">
+        <span className="text-xs text-zinc-500 shrink-0">Model:</span>
+        <div className="relative flex-1">
+          <select
+            value={value}
+            onChange={(e) => void handleChange(e.target.value)}
+            className="w-full appearance-none pl-3 pr-8 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm focus:outline-none focus:border-indigo-500 transition-colors cursor-pointer"
+          >
+            {models.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label} — {m.description}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+        </div>
+        {saved && (
+          <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
+            <Check size={12} /> Saved
+          </span>
+        )}
+        {!saved && selected && (
+          <span className="text-xs text-zinc-600 shrink-0 hidden sm:block">{selected.description}</span>
+        )}
       </div>
-      {saved && (
-        <span className="flex items-center gap-1 text-xs text-emerald-400 shrink-0">
-          <Check size={12} /> Saved
-        </span>
+      {value === 'claude-opus-4-6' && (
+        <p className="text-xs text-amber-500/80 mt-1.5">
+          Opus is slow with 20 parallel workers — consider Sonnet or Haiku for faster bulk categorization.
+        </p>
       )}
-      {!saved && selected && (
-        <span className="text-xs text-zinc-600 shrink-0 hidden sm:block">{selected.description}</span>
-      )}
-    </div>
+    </>
   )
 }
 

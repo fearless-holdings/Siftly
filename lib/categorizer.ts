@@ -272,13 +272,11 @@ function parseCategorizationResponse(text: string, validSlugs: Set<string>): Cat
 
 export async function categorizeBatch(
   bookmarks: BookmarkForCategorization[],
-  apiKey: string,
+  client: Anthropic,
   categoryDescriptions: Record<string, string> = {},
   allSlugs: string[] = DEFAULT_SLUGS,
 ): Promise<CategorizationResult[]> {
   if (bookmarks.length === 0) return []
-
-  const client = await resolveAnthropicClient(apiKey || undefined)
 
   const model = await getAnthropicModel()
   const prompt = buildCategorizationPrompt(bookmarks, categoryDescriptions, allSlugs)
@@ -402,6 +400,9 @@ export async function categorizeAll(
 ): Promise<void> {
   await seedDefaultCategories()
 
+  // Resolve auth once — avoids re-resolving inside every batch call
+  const client = await resolveAnthropicClient()
+
   // Load ALL categories (default + custom) for the prompt
   const dbCategories = await prisma.category.findMany({ select: { slug: true, name: true, description: true } })
   const allSlugs = dbCategories.map((c) => c.slug)
@@ -432,7 +433,7 @@ export async function categorizeAll(
       })
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, '', categoryDescriptions, allSlugs)
+        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
         await writeCategoryResults(results)
       } catch (err) {
         console.error(`Error categorizing batch at index ${i}:`, err)
@@ -460,7 +461,7 @@ export async function categorizeAll(
 
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, '', categoryDescriptions, allSlugs)
+        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
         await writeCategoryResults(results)
       } catch (err) {
         console.error('Error categorizing batch:', err)
