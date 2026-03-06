@@ -143,19 +143,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     error: null,
   })
 
-  const anthropicApiKey =
-    (await prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } }))?.value?.trim() ||
-    process.env.ANTHROPIC_API_KEY ||
-    ''
+  const dbApiKey =
+    (await prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } }))?.value?.trim() || ''
+  const anthropicApiKey = dbApiKey || process.env.ANTHROPIC_API_KEY || ''
   const baseURL = process.env.ANTHROPIC_BASE_URL
 
   void (async () => {
     const counts = { visionTagged: 0, entitiesExtracted: 0, enriched: 0, categorized: 0 }
 
     try {
-      const resolvedClient = anthropicApiKey
-        ? new Anthropic({ apiKey: anthropicApiKey, ...(baseURL ? { baseURL } : {}) })
-        : createCliAnthropicClient(baseURL)
+      // CLI auth is tried before env var so .env placeholders don't block CLI users
+      const resolvedClient = dbApiKey
+        ? new Anthropic({ apiKey: dbApiKey, ...(baseURL ? { baseURL } : {}) })
+        : (createCliAnthropicClient(baseURL) ?? (anthropicApiKey ? new Anthropic({ apiKey: anthropicApiKey, ...(baseURL ? { baseURL } : {}) }) : null))
 
       if (!resolvedClient) {
         setState({ lastError: 'No Anthropic API key configured. Go to Settings to add one, or log in with Claude CLI.' })

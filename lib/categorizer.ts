@@ -155,9 +155,12 @@ export async function seedDefaultCategories(): Promise<void> {
  * Resolves an Anthropic client using the first available auth method:
  * 1. Override key (from request)
  * 2. DB-saved API key
- * 3. ANTHROPIC_API_KEY env var
- * 4. Logged-in Claude CLI session (OAuth Bearer via keychain)
+ * 3. Logged-in Claude CLI session (OAuth Bearer via keychain)
+ * 4. ANTHROPIC_API_KEY env var
  * 5. Local proxy via ANTHROPIC_BASE_URL
+ *
+ * CLI auth is intentionally checked before the env var so that users with
+ * Claude Code CLI signed in are never blocked by a placeholder in .env.
  */
 async function resolveAnthropicClient(overrideKey?: string): Promise<Anthropic> {
   const baseURL = process.env.ANTHROPIC_BASE_URL
@@ -171,14 +174,14 @@ async function resolveAnthropicClient(overrideKey?: string): Promise<Anthropic> 
     return new Anthropic({ apiKey: setting.value.trim(), ...(baseURL ? { baseURL } : {}) })
   }
 
+  // Try CLI auth before env var — prevents .env placeholders from blocking CLI users
+  const cliClient = createCliAnthropicClient(baseURL)
+  if (cliClient) return cliClient
+
   const envKey = process.env.ANTHROPIC_API_KEY
   if (envKey && envKey.trim() !== '') {
     return new Anthropic({ apiKey: envKey.trim(), ...(baseURL ? { baseURL } : {}) })
   }
-
-  // Fall back to Claude CLI OAuth session
-  const cliClient = createCliAnthropicClient(baseURL)
-  if (cliClient) return cliClient
 
   // Local proxy handles auth
   if (baseURL) return new Anthropic({ apiKey: 'proxy', baseURL })

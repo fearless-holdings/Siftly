@@ -24,10 +24,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const baseURL = process.env.ANTHROPIC_BASE_URL
-  const apiKey = process.env.ANTHROPIC_API_KEY || ''
-  const client: Anthropic = apiKey
-    ? new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })
-    : (createCliAnthropicClient(baseURL) ?? new Anthropic({ apiKey: '', ...(baseURL ? { baseURL } : {}) }))
+  // CLI auth is tried before env var so .env placeholders don't block CLI users
+  const cliClient = createCliAnthropicClient(baseURL)
+  const envKey = process.env.ANTHROPIC_API_KEY || ''
+  const client: Anthropic = cliClient
+    ?? (envKey ? new Anthropic({ apiKey: envKey, ...(baseURL ? { baseURL } : {}) }) : new Anthropic({ apiKey: '', ...(baseURL ? { baseURL } : {}) }))
 
   const untagged = await prisma.mediaItem.findMany({
     where: { imageTags: null, type: { in: ['photo', 'gif'] } },

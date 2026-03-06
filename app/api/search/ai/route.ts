@@ -28,23 +28,23 @@ let _modelExpiry = 0
 let _categoriesCache: { slug: string; name: string; description: string | null }[] | null = null
 let _categoriesCacheExpiry = 0
 
-async function getApiKey(): Promise<string> {
+async function getDbApiKey(): Promise<string> {
   if (_apiKey !== null && Date.now() < _apiKeyExpiry) return _apiKey
   const setting = await prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } })
-  const fromDb = setting?.value?.trim()
-  if (fromDb) { _apiKey = fromDb; _apiKeyExpiry = Date.now() + 60_000; return _apiKey }
-  const fromEnv = process.env.ANTHROPIC_API_KEY
-  if (fromEnv) { _apiKey = fromEnv; _apiKeyExpiry = Date.now() + 60_000; return _apiKey }
-  _apiKey = ''
+  const fromDb = setting?.value?.trim() ?? ''
+  _apiKey = fromDb
   _apiKeyExpiry = Date.now() + 60_000
   return _apiKey
 }
 
-function resolveSearchClient(apiKey: string): Anthropic {
+// CLI auth is tried before env var so .env placeholders don't block CLI users
+function resolveSearchClient(dbApiKey: string): Anthropic {
   const baseURL = process.env.ANTHROPIC_BASE_URL
-  if (apiKey) return new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) })
+  if (dbApiKey) return new Anthropic({ apiKey: dbApiKey, ...(baseURL ? { baseURL } : {}) })
   const cliClient = createCliAnthropicClient(baseURL)
   if (cliClient) return cliClient
+  const envKey = process.env.ANTHROPIC_API_KEY
+  if (envKey) return new Anthropic({ apiKey: envKey, ...(baseURL ? { baseURL } : {}) })
   if (baseURL) return new Anthropic({ apiKey: 'proxy', baseURL })
   throw new Error('No Anthropic API key configured. Add it in Settings or log in with Claude CLI.')
 }
@@ -227,7 +227,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const { query, category } = body
   if (!query?.trim()) return NextResponse.json({ error: 'Query required' }, { status: 400 })
 
-  const apiKey = await getApiKey()
+  const apiKey = await getDbApiKey()
 
   const cacheKey = `${query.trim().toLowerCase()}::${category ?? ''}`
   const cached = getCached(cacheKey)
