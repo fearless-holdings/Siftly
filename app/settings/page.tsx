@@ -453,6 +453,7 @@ function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
             defaultValue="claude-haiku-4-5-20251001"
             onToast={onToast}
           />
+          <p className="text-xs text-zinc-600 mt-1.5">Applied to all AI operations — API key and Claude CLI</p>
         </div>
         <div className="border-t border-zinc-800" />
         <div>
@@ -654,7 +655,7 @@ function AboutSection() {
             <span className="text-xs font-semibold text-amber-300">Support development</span>
           </div>
           <p className="text-[11px] text-zinc-500 mb-2.5 leading-relaxed">
-            If Siftly saves you time, consider leaving a tip ☕
+            If Siftly saves you time, consider leaving a tip
           </p>
           <button
             onClick={copyAddress}
