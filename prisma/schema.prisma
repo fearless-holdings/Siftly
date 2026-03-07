@@ -20,12 +20,14 @@ model Bookmark {
   entities        String?   // JSON: {hashtags[], urls[], mentions[], tools[], tweetType}
   enrichedAt      DateTime? // when AI enrichment last ran — drives incremental processing
   enrichmentMeta  String?   // JSON: {sentiment, people[], companies[]} from batch enrichment
+  source          String    @default("bookmark")  // "bookmark" | "like"
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
 
   @@index([authorHandle])
   @@index([tweetCreatedAt])
   @@index([enrichedAt])
+  @@index([source])
 }
 
 model Category {

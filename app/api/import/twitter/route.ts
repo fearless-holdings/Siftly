@@ -25,9 +25,36 @@ const FEATURES = JSON.stringify({
   responsive_web_enhance_cards_enabled: false,
 })
 
-// Query ID for Twitter's internal Bookmarks GraphQL endpoint
-// This can change when Twitter deploys updates — update if you get 400 errors
-const QUERY_ID = 'j5KExFXy1niL_uGnBhHNxA'
+// Query IDs for Twitter's internal GraphQL endpoints
+// These can change when Twitter deploys updates — update if you get 400 errors
+//
+// To find the Likes query ID: open x.com/<username>/likes with DevTools Network tab,
+// filter by "graphql", find the "Likes" request, and grab the ID from the URL path.
+const ENDPOINTS = {
+  bookmark: {
+    queryId: 'j5KExFXy1niL_uGnBhHNxA',
+    operationName: 'Bookmarks',
+    referer: 'https://x.com/i/bookmarks',
+    getInstructions: (d: Record<string, unknown>): unknown[] =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (d as any)?.data?.bookmark_timeline_v2?.timeline?.instructions ?? [],
+  },
+  like: {
+    // PLACEHOLDER — you must replace this with the real query ID from x.com Network tab
+    queryId: 'REPLACE_ME',
+    operationName: 'Likes',
+    referer: 'https://x.com',
+    getInstructions: (d: Record<string, unknown>): unknown[] => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const a = d as any
+      return a?.data?.user?.result?.timeline_v2?.timeline?.instructions
+        ?? a?.data?.liked_tweets_timeline?.timeline?.instructions
+        ?? []
+    },
+  },
+} as const
+
+type Source = keyof typeof ENDPOINTS
 
 interface MediaVariant {
   content_type?: string
@@ -59,14 +86,16 @@ interface TweetResult {
   core?: { user_results?: { result?: { legacy?: UserLegacy } } }
 }
 
-async function fetchPage(authToken: string, ct0: string, cursor?: string) {
+async function fetchPage(authToken: string, ct0: string, source: Source, cursor?: string, userId?: string) {
+  const cfg = ENDPOINTS[source]
   const variables = JSON.stringify({
     count: 100,
     includePromotedContent: false,
+    ...(source === 'like' && userId ? { userId } : {}),
     ...(cursor ? { cursor } : {}),
   })
 
-  const url = `https://x.com/i/api/graphql/${QUERY_ID}/Bookmarks?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(FEATURES)}`
+  const url = `https://x.com/i/api/graphql/${cfg.queryId}/${cfg.operationName}?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(FEATURES)}`
 
   const res = await fetch(url, {
     headers: {
@@ -79,7 +108,7 @@ async function fetchPage(authToken: string, ct0: string, cursor?: string) {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       Accept: '*/*',
       'Accept-Language': 'en-US,en;q=0.9',
-      Referer: 'https://x.com/i/bookmarks',
+      Referer: cfg.referer,
     },
   })
 
@@ -91,17 +120,16 @@ async function fetchPage(authToken: string, ct0: string, cursor?: string) {
   return res.json()
 }
 
-function parsePage(data: unknown): { tweets: TweetResult[]; nextCursor: string | null } {
-  const instructions =
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (data as any)?.data?.bookmark_timeline_v2?.timeline?.instructions ?? []
+function parsePage(data: unknown, source: Source): { tweets: TweetResult[]; nextCursor: string | null } {
+  const instructions = ENDPOINTS[source].getInstructions(data as Record<string, unknown>)
 
   const tweets: TweetResult[] = []
   let nextCursor: string | null = null
 
-  for (const instruction of instructions) {
+  for (const instruction of instructions as Array<Record<string, unknown>>) {
     if (instruction.type !== 'TimelineAddEntries') continue
-    for (const entry of instruction.entries ?? []) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const entry of (instruction as any).entries ?? []) {
       const content = entry.content
       if (content?.entryType === 'TimelineTimelineItem') {
         const tweet: TweetResult = content?.itemContent?.tweet_results?.result
@@ -143,7 +171,7 @@ function extractMedia(tweet: TweetResult) {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  let body: { authToken?: string; ct0?: string } = {}
+  let body: { authToken?: string; ct0?: string; source?: string; userId?: string } = {}
   try {
     body = await request.json()
   } catch {
@@ -151,8 +179,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const { authToken, ct0 } = body
+  const source: Source = body.source === 'like' ? 'like' : 'bookmark'
+  const userId = body.userId?.trim()
+
   if (!authToken?.trim() || !ct0?.trim()) {
     return NextResponse.json({ error: 'authToken and ct0 are required' }, { status: 400 })
+  }
+
+  if (source === 'like' && !userId) {
+    return NextResponse.json({ error: 'userId is required for importing likes' }, { status: 400 })
   }
 
   let imported = 0
@@ -161,8 +196,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     while (true) {
-      const data = await fetchPage(authToken.trim(), ct0.trim(), cursor)
-      const { tweets, nextCursor } = parsePage(data)
+      const data = await fetchPage(authToken.trim(), ct0.trim(), source, cursor, userId)
+      const { tweets, nextCursor } = parsePage(data, source)
 
       for (const tweet of tweets) {
         if (!tweet.rest_id) continue
@@ -190,6 +225,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               ? new Date(tweet.legacy.created_at)
               : null,
             rawJson: JSON.stringify(tweet),
+            source,
           },
         })
 

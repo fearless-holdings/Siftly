@@ -23,6 +23,7 @@ interface Filters {
   q: string
   category: string
   mediaType: string
+  source: string
   sort: string
   page: number
   uncategorized: boolean
@@ -32,6 +33,7 @@ const DEFAULT_FILTERS: Filters = {
   q: '',
   category: '',
   mediaType: '',
+  source: '',
   sort: 'newest',
   page: 1,
   uncategorized: false,
@@ -46,6 +48,7 @@ function buildUrl(filters: Filters): string {
     params.set('category', filters.category)
   }
   if (filters.mediaType) params.set('mediaType', filters.mediaType)
+  if (filters.source) params.set('source', filters.source)
   params.set('sort', filters.sort)
   params.set('page', String(filters.page))
   params.set('limit', String(PAGE_SIZE))
@@ -252,12 +255,17 @@ function BookmarksPageInner() {
     { label: 'Videos', value: 'video' },
   ]
 
+  const sourceOptions = [
+    { label: 'Bookmarks', value: 'bookmark' },
+    { label: 'Likes', value: 'like' },
+  ]
+
   const sortOptions = [
     { label: 'Newest first', value: 'newest' },
     { label: 'Oldest first', value: 'oldest' },
   ]
 
-  const hasActiveFilters = !!(filters.q || filters.category || filters.mediaType || filters.sort !== 'newest' || filters.uncategorized)
+  const hasActiveFilters = !!(filters.q || filters.category || filters.mediaType || filters.source || filters.sort !== 'newest' || filters.uncategorized)
 
   const sortLabel = sortOptions.find((o) => o.value === filters.sort)?.label ?? 'Newest first'
 
@@ -295,6 +303,14 @@ function BookmarksPageInner() {
               onChange={(v) => updateFilter('mediaType', v)}
               options={mediaOptions}
               placeholder="All media"
+            />
+
+            {/* Source */}
+            <SelectMenu
+              value={filters.source}
+              onChange={(v) => updateFilter('source', v)}
+              options={sourceOptions}
+              placeholder="All sources"
             />
 
             {/* Sort */}
@@ -350,6 +366,12 @@ function BookmarksPageInner() {
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium">
                   {mediaOptions.find((o) => o.value === filters.mediaType)?.label}
                   <button onClick={() => updateFilter('mediaType', '')} className="text-indigo-400 hover:text-indigo-200 transition-colors"><X size={10} /></button>
+                </span>
+              )}
+              {filters.source && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs font-medium">
+                  {sourceOptions.find((o) => o.value === filters.source)?.label}
+                  <button onClick={() => updateFilter('source', '')} className="text-indigo-400 hover:text-indigo-200 transition-colors"><X size={10} /></button>
                 </span>
               )}
               {filters.sort !== 'newest' && (

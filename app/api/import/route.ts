@@ -10,6 +10,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Failed to parse form data' }, { status: 400 })
   }
 
+  const sourceParam = (formData.get('source') as string | null)?.trim()
   const file = formData.get('file')
   if (!file || !(file instanceof Blob)) {
     return NextResponse.json(
@@ -55,6 +56,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     )
   }
 
+  // Determine source: formData param > JSON field > default "bookmark"
+  let jsonSource: string | undefined
+  try {
+    const parsed = JSON.parse(jsonString)
+    if (typeof parsed?.source === 'string') jsonSource = parsed.source
+  } catch { /* already parsed above */ }
+  const source = (sourceParam === 'like' || sourceParam === 'bookmark')
+    ? sourceParam
+    : (jsonSource === 'like' ? 'like' : 'bookmark')
+
   await prisma.importJob.update({
     where: { id: importJob.id },
     data: { totalCount: parsedBookmarks.length },
@@ -83,6 +94,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           authorName: bookmark.authorName,
           tweetCreatedAt: bookmark.tweetCreatedAt,
           rawJson: bookmark.rawJson,
+          source,
         },
       })
 

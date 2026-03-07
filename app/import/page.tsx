@@ -65,8 +65,11 @@ const STAGE_INFO: Record<NonNullable<Stage>, { label: string; icon: React.ReactN
 
 const BOOKMARKLET_SCRIPT = `(async function(){
   if(!location.hostname.includes('twitter.com')&&!location.hostname.includes('x.com')){
-    showToast('\u274c Please navigate to x.com/i/bookmarks first','#ef4444');return;
+    showToast('\u274c Please navigate to x.com/i/bookmarks or x.com/username/likes first','#ef4444');return;
   }
+  var isLikes=location.pathname.includes('/likes');
+  var source=isLikes?'like':'bookmark';
+  var label=isLikes?'likes':'bookmarks';
   function showToast(msg,bg){
     var t=document.createElement('div');t.innerHTML=msg;
     Object.assign(t.style,{position:'fixed',bottom:'24px',left:'50%',transform:'translateX(-50%)',
@@ -79,7 +82,7 @@ const BOOKMARKLET_SCRIPT = `(async function(){
   }
   var all=[],seen=new Set();
   var btn=document.createElement('button');
-  btn.textContent='Scroll, then Export 0 bookmarks \u2192';
+  btn.textContent='Scroll, then Export 0 '+label+' \u2192';
   Object.assign(btn.style,{position:'fixed',top:'12px',right:'12px',zIndex:'2147483647',
     padding:'10px 18px',background:'#4f46e5',color:'#fff',border:'none',borderRadius:'8px',
     cursor:'pointer',fontSize:'14px',fontWeight:'700',
@@ -107,7 +110,7 @@ const BOOKMARKLET_SCRIPT = `(async function(){
       text:leg.full_text||leg.text||'',media:media,
       hashtags:(leg.entities&&leg.entities.hashtags||[]).map(function(h){return h.text;}),
       urls:(leg.entities&&leg.entities.urls||[]).map(function(u){return u.expanded_url;}).filter(Boolean)});
-    btn.textContent='Export '+all.length+' bookmarks \u2192';
+    btn.textContent='Export '+all.length+' '+label+' \u2192';
   }
   function processEntry(e){
     if(!e)return;
@@ -118,11 +121,15 @@ const BOOKMARKLET_SCRIPT = `(async function(){
     }
     if(e.content&&e.content.items)e.content.items.forEach(function(i){processEntry({content:i.item||i});});
   }
+  function findInstructions(obj,depth){
+    if(!obj||typeof obj!=='object'||depth>6)return null;
+    if(Array.isArray(obj))return null;
+    if(Array.isArray(obj.instructions))return obj.instructions;
+    for(var k in obj){if(Object.prototype.hasOwnProperty.call(obj,k)){var r=findInstructions(obj[k],depth+1);if(r)return r;}}
+    return null;
+  }
   function processData(d){
-    var instr=
-      (d&&d.data&&d.data.bookmark_timeline_v2&&d.data.bookmark_timeline_v2.timeline&&d.data.bookmark_timeline_v2.timeline.instructions)||
-      (d&&d.data&&d.data.bookmarks_timeline&&d.data.bookmarks_timeline.timeline&&d.data.bookmarks_timeline.timeline.instructions)||
-      (d&&d.data&&d.data.timeline_by_id&&d.data.timeline_by_id.timeline&&d.data.timeline_by_id.timeline.instructions)||[];
+    var instr=findInstructions(d,0)||[];
     instr.forEach(function(i){(i.entries||[]).forEach(processEntry);(i.moduleItems||[]).forEach(processEntry);});
   }
   var autoBtn=document.createElement('button');
@@ -130,13 +137,13 @@ const BOOKMARKLET_SCRIPT = `(async function(){
     window.fetch=origFetch;
     XMLHttpRequest.prototype.open=origOpen;
     XMLHttpRequest.prototype.send=origSend;
-    if(!all.length){showToast('\u26a0\ufe0f No bookmarks captured \u2014 scroll or use Auto-scroll first!','#92400e');return;}
+    if(!all.length){showToast('\u26a0\ufe0f No '+label+' captured \u2014 scroll or use Auto-scroll first!','#92400e');return;}
     [btn,autoBtn].forEach(function(el){try{document.body.removeChild(el);}catch(e){}});
-    var blob=new Blob([JSON.stringify({bookmarks:all},null,2)],{type:'application/json'});
+    var blob=new Blob([JSON.stringify({bookmarks:all,source:source},null,2)],{type:'application/json'});
     var url=URL.createObjectURL(blob);
-    var a=document.createElement('a');a.href=url;a.download='bookmarks.json';a.click();
+    var a=document.createElement('a');a.href=url;a.download=source+'s.json';a.click();
     setTimeout(function(){URL.revokeObjectURL(url);},1000);
-    showToast('\u2705 Downloaded '+all.length+' bookmarks! Upload to Siftly.','#14532d');
+    showToast('\u2705 Downloaded '+all.length+' '+label+'! Upload to Siftly.','#14532d');
   }
   btn.onclick=doExport;
   autoBtn.textContent='\u25b6 Auto-scroll';
@@ -163,7 +170,7 @@ const BOOKMARKLET_SCRIPT = `(async function(){
             autoScrolling=false;
             autoBtn.textContent='\u2705 Done \u2014 '+all.length+' captured';
             autoBtn.style.background='#14532d';autoBtn.style.color='#86efac';autoBtn.style.border='1px solid #166534';
-            showToast('\u2705 Auto-scroll complete! '+all.length+' bookmarks ready. Click Export.','#14532d');
+            showToast('\u2705 Auto-scroll complete! '+all.length+' '+label+' ready. Click Export.','#14532d');
             return;
           }
           stagnant=0;
@@ -187,7 +194,7 @@ const BOOKMARKLET_SCRIPT = `(async function(){
     var r=await origFetch.apply(this,arguments);
     try{
       var u=arguments[0] instanceof Request?arguments[0].url:String(arguments[0]);
-      if(u.toLowerCase().includes('bookmark')){var d=await r.clone().json();processData(d);}
+      if(u.includes('/graphql/')){var d=await r.clone().json();processData(d);}
     }catch(ex){}
     return r;
   };
@@ -195,18 +202,21 @@ const BOOKMARKLET_SCRIPT = `(async function(){
   XMLHttpRequest.prototype.open=function(){xhrUrls.set(this,String(arguments[1]||''));return origOpen.apply(this,arguments);};
   XMLHttpRequest.prototype.send=function(){
     var xhr=this,u=xhrUrls.get(xhr)||'';
-    if(u.toLowerCase().includes('bookmark')){xhr.addEventListener('load',function(){try{processData(JSON.parse(xhr.responseText));}catch(ex){}});}
+    if(u.includes('/graphql/')){xhr.addEventListener('load',function(){try{processData(JSON.parse(xhr.responseText));}catch(ex){}});}
     return origSend.apply(this,arguments);
   };
-  showToast('\u2705 Active! Scroll your bookmarks \u2014 counter updates above.','#1e1b4b');
+  showToast('\u2705 Active! Scroll your '+label+' \u2014 counter updates above.','#1e1b4b');
 })();`
 
 const BOOKMARKLET_HREF = `javascript:${encodeURIComponent(BOOKMARKLET_SCRIPT)}`
 
 const CONSOLE_SCRIPT = `(async function() {
   if (!location.hostname.includes('twitter.com') && !location.hostname.includes('x.com')) {
-    alert('Run this on x.com/i/bookmarks'); return;
+    alert('Run this on x.com/i/bookmarks or x.com/username/likes'); return;
   }
+  const isLikes = location.pathname.includes('/likes');
+  const source = isLikes ? 'like' : 'bookmark';
+  const label = isLikes ? 'likes' : 'bookmarks';
   const all = [], seen = new Set();
   function addTweet(t) {
     if (!t?.rest_id || seen.has(t.rest_id)) return;
@@ -229,7 +239,7 @@ const CONSOLE_SCRIPT = `(async function() {
       hashtags: (leg.entities?.hashtags ?? []).map(h => h.text),
       urls: (leg.entities?.urls ?? []).map(u => u.expanded_url).filter(Boolean)
     });
-    btn.textContent = \`Export \${all.length} bookmarks →\`;
+    btn.textContent = \`Export \${all.length} \${label} →\`;
   }
   function processEntry(e) {
     if (!e) return;
@@ -243,11 +253,15 @@ const CONSOLE_SCRIPT = `(async function() {
     }
     if (e.content?.items) e.content.items.forEach(i => processEntry({ content: i.item ?? i }));
   }
+  function findInstructions(obj, depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 6) return null;
+    if (Array.isArray(obj)) return null;
+    if (Array.isArray(obj.instructions)) return obj.instructions;
+    for (const k of Object.keys(obj)) { const r = findInstructions(obj[k], depth + 1); if (r) return r; }
+    return null;
+  }
   function processData(d) {
-    const instr =
-      d?.data?.bookmark_timeline_v2?.timeline?.instructions ??
-      d?.data?.bookmarks_timeline?.timeline?.instructions ??
-      d?.data?.timeline_by_id?.timeline?.instructions ?? [];
+    const instr = findInstructions(d) ?? [];
     instr.forEach(i => {
       (i.entries ?? []).forEach(processEntry);
       (i.moduleItems ?? []).forEach(processEntry);
@@ -268,13 +282,13 @@ const CONSOLE_SCRIPT = `(async function() {
     XMLHttpRequest.prototype.open = origOpen;
     XMLHttpRequest.prototype.send = origSend;
     [btn, autoBtn].forEach(el => { try { document.body.removeChild(el); } catch(e) {} });
-    if (!all.length) { alert('No bookmarks captured. Use Auto-scroll or scroll manually first.'); return; }
-    const blob = new Blob([JSON.stringify({ bookmarks: all }, null, 2)], { type: 'application/json' });
+    if (!all.length) { alert(\`No \${label} captured. Use Auto-scroll or scroll manually first.\`); return; }
+    const blob = new Blob([JSON.stringify({ bookmarks: all, source }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'bookmarks.json'; a.click();
+    a.href = url; a.download = \`\${source}s.json\`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    console.log(\`✅ Downloaded \${all.length} bookmarks!\`);
+    console.log(\`✅ Downloaded \${all.length} \${label}!\`);
   }
   btn.onclick = doExport;
   const autoBtn = document.createElement('button');
@@ -304,7 +318,7 @@ const CONSOLE_SCRIPT = `(async function() {
             autoScrolling = false;
             autoBtn.textContent = \`✅ Done — \${all.length} captured\`;
             autoBtn.style.cssText += ';background:#14532d;color:#86efac;border:1px solid #166534';
-            console.log(\`✅ Auto-scroll complete! \${all.length} bookmarks ready. Click Export.\`);
+            console.log(\`✅ Auto-scroll complete! \${all.length} \${label} ready. Click Export.\`);
             return;
           }
           stagnant = 0;
@@ -328,7 +342,7 @@ const CONSOLE_SCRIPT = `(async function() {
     const r = await origFetch.apply(this, args);
     try {
       const u = args[0] instanceof Request ? args[0].url : String(args[0]);
-      if (u.toLowerCase().includes('bookmark')) {
+      if (u.includes('/graphql/')) {
         const d = await r.clone().json();
         processData(d);
       }
@@ -344,14 +358,14 @@ const CONSOLE_SCRIPT = `(async function() {
   };
   XMLHttpRequest.prototype.send = function(...args) {
     const xhr = this, u = xhrUrls.get(xhr) ?? '';
-    if (u.toLowerCase().includes('bookmark')) {
+    if (u.includes('/graphql/')) {
       xhr.addEventListener('load', function() {
         try { processData(JSON.parse(xhr.responseText)); } catch(e) {}
       });
     }
     return origSend.apply(this, args);
   };
-  console.log('✅ Script active. Scroll through your bookmarks, then click the purple button.');
+  console.log(\`✅ Script active. Scroll through your \${label}, then click the purple button.\`);
 })();`
 
 // ── Draggable bookmarklet link ────────────────────────────────────────────────
@@ -452,14 +466,17 @@ function UploadZone({ onFile }: { onFile: (file: File) => void }) {
       }`}
     >
       <Upload size={28} className="mx-auto mb-3 text-zinc-500" />
-      <p className="text-zinc-300 font-medium text-sm">Drop your bookmarks.json file here</p>
+      <p className="text-zinc-300 font-medium text-sm">Drop your JSON file here</p>
       <p className="text-zinc-600 text-xs mt-1">or click to browse</p>
       <input ref={inputRef} type="file" accept=".json" className="hidden" onChange={handleFileChange} />
     </div>
   )
 }
 
-function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
+function BookmarkletTab({ onFile, importSource }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like' }) {
+  const targetUrl = importSource === 'like' ? 'https://x.com' : 'https://x.com/i/bookmarks'
+  const targetLabel = importSource === 'like' ? 'x.com/YourUsername/likes' : 'x.com/i/bookmarks'
+  const sourceLabel = importSource === 'like' ? 'likes' : 'bookmarks'
   const steps = [
     {
       num: 1,
@@ -499,12 +516,12 @@ function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
         <span>
           Go to{' '}
           <a
-            href="https://x.com/i/bookmarks"
+            href={targetUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-indigo-400 hover:underline inline-flex items-center gap-1"
           >
-            x.com/i/bookmarks <ExternalLink size={11} />
+            {targetLabel} <ExternalLink size={11} />
           </a>{' '}
           while logged in
         </span>
@@ -512,7 +529,7 @@ function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
     },
     {
       num: 3,
-      title: 'Click "Export X Bookmarks" in your bookmark bar',
+      title: `Click "Export X Bookmarks" in your bookmark bar`,
       content: (
         <p className="text-xs text-zinc-500 mt-1">
           A purple Export button will appear on the page
@@ -530,10 +547,10 @@ function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
     },
     {
       num: 5,
-      title: 'Click the purple "Export N bookmarks" button',
+      title: `Click the purple "Export N ${sourceLabel}" button`,
       content: (
         <p className="text-xs text-zinc-500 mt-1">
-          A <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">bookmarks.json</code> file will download automatically.
+          A <code className="text-xs bg-zinc-800 px-1 py-0.5 rounded">{sourceLabel}.json</code> file will download automatically.
           Upload it below.
         </p>
       ),
@@ -564,7 +581,10 @@ function BookmarkletTab({ onFile }: { onFile: (file: File) => void }) {
   )
 }
 
-function ConsoleTab({ onFile }: { onFile: (file: File) => void }) {
+function ConsoleTab({ onFile, importSource }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like' }) {
+  const targetUrl = importSource === 'like' ? 'https://x.com' : 'https://x.com/i/bookmarks'
+  const targetLabel = importSource === 'like' ? 'x.com/YourUsername/likes' : 'x.com/i/bookmarks'
+  const sourceLabel = importSource === 'like' ? 'likes' : 'bookmarks'
   const steps = [
     {
       num: 1,
@@ -572,12 +592,12 @@ function ConsoleTab({ onFile }: { onFile: (file: File) => void }) {
         <span>
           Go to{' '}
           <a
-            href="https://x.com/i/bookmarks"
+            href={targetUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-indigo-400 hover:underline inline-flex items-center gap-1"
           >
-            x.com/i/bookmarks <ExternalLink size={11} />
+            {targetLabel} <ExternalLink size={11} />
           </a>{' '}
           while logged in
         </span>
@@ -613,10 +633,10 @@ function ConsoleTab({ onFile }: { onFile: (file: File) => void }) {
     },
     {
       num: 4,
-      title: 'Press Enter, then scroll through all your bookmarks',
+      title: `Press Enter, then scroll through all your ${sourceLabel}`,
       content: (
         <p className="text-xs text-zinc-500 mt-1">
-          A purple button will appear. Scroll slowly to capture all bookmarks, then click the button to download.
+          A purple button will appear. Scroll slowly to capture all {sourceLabel}, then click the button to download.
         </p>
       ),
     },
@@ -646,7 +666,7 @@ function ConsoleTab({ onFile }: { onFile: (file: File) => void }) {
   )
 }
 
-function InstructionsStep({ onFile }: { onFile: (file: File) => void }) {
+function InstructionsStep({ onFile, importSource }: { onFile: (file: File) => void; importSource: 'bookmark' | 'like' }) {
   const [method, setMethod] = useState<Method>('bookmarklet')
 
   return (
@@ -677,9 +697,9 @@ function InstructionsStep({ onFile }: { onFile: (file: File) => void }) {
       </div>
 
       {method === 'bookmarklet' ? (
-        <BookmarkletTab onFile={onFile} />
+        <BookmarkletTab onFile={onFile} importSource={importSource} />
       ) : (
-        <ConsoleTab onFile={onFile} />
+        <ConsoleTab onFile={onFile} importSource={importSource} />
       )}
     </div>
   )
@@ -982,6 +1002,7 @@ function UncategorizedBanner({ onCategorize }: { onCategorize: () => void }) {
 
 export default function ImportPage() {
   const [step, setStep] = useState<Step>(1)
+  const [importSource, setImportSource] = useState<'bookmark' | 'like'>('bookmark')
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [importing, setImporting] = useState(false)
 
@@ -1002,6 +1023,7 @@ export default function ImportPage() {
     try {
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('source', importSource)
 
       const res = await fetch('/api/import', { method: 'POST', body: formData })
       const data = await res.json()
@@ -1028,16 +1050,42 @@ export default function ImportPage() {
   return (
     <div className="p-8 max-w-2xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-zinc-100">Import Bookmarks</h1>
-        <p className="text-zinc-400 mt-1">Export your X/Twitter bookmarks as JSON, then upload below.</p>
+        <h1 className="text-2xl font-bold text-zinc-100">Import {importSource === 'like' ? 'Likes' : 'Bookmarks'}</h1>
+        <p className="text-zinc-400 mt-1">Export your X/Twitter {importSource === 'like' ? 'likes' : 'bookmarks'} as JSON, then upload below.</p>
       </div>
+
+      {/* Source selector */}
+      {step === 1 && (
+        <div className="flex gap-2 mb-6">
+          <button
+            onClick={() => setImportSource('bookmark')}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border ${
+              importSource === 'bookmark'
+                ? 'bg-indigo-600 border-indigo-500 text-white'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+            }`}
+          >
+            Bookmarks
+          </button>
+          <button
+            onClick={() => setImportSource('like')}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border ${
+              importSource === 'like'
+                ? 'bg-pink-600 border-pink-500 text-white'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+            }`}
+          >
+            Likes
+          </button>
+        </div>
+      )}
 
       {step === 1 && <UncategorizedBanner onCategorize={() => setStep(3)} />}
 
       <StepIndicator current={step} />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
-        {step === 1 && <InstructionsStep onFile={handleFile} />}
+        {step === 1 && <InstructionsStep onFile={handleFile} importSource={importSource} />}
         {step === 2 && (
           <ImportingStep
             result={importing ? null : importResult}

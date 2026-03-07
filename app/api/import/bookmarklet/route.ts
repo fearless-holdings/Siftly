@@ -64,13 +64,14 @@ function extractMedia(tweet: TweetResult) {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  let body: { tweets?: TweetResult[] } = {}
+  let body: { tweets?: TweetResult[]; source?: string } = {}
   try {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400, headers: CORS })
   }
 
+  const source = body.source === 'like' ? 'like' : 'bookmark'
   const tweets = body.tweets ?? []
   if (!Array.isArray(tweets) || tweets.length === 0) {
     return NextResponse.json({ error: 'No tweets provided' }, { status: 400, headers: CORS })
@@ -105,6 +106,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           ? new Date(tweet.legacy.created_at)
           : null,
         rawJson: JSON.stringify(tweet),
+        source,
       },
     })
 

@@ -34,6 +34,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url)
 
   const q = searchParams.get('q')?.trim() ?? ''
+  const source = searchParams.get('source')?.trim() ?? ''
   const categorySlug = searchParams.get('category')?.trim() ?? ''
   const mediaType = searchParams.get('mediaType')?.trim() ?? ''
   const uncategorized = searchParams.get('uncategorized') === 'true'
@@ -44,6 +45,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const orderDir = sortParam === 'oldest' ? 'asc' : 'desc'
 
   const where: Record<string, unknown> = {}
+
+  if (source === 'bookmark' || source === 'like') {
+    where.source = source
+  }
 
   if (q) {
     where.text = { contains: q }
@@ -97,6 +102,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       text: bookmark.text,
       authorHandle: bookmark.authorHandle,
       authorName: bookmark.authorName,
+      source: bookmark.source,
       tweetCreatedAt: bookmark.tweetCreatedAt?.toISOString() ?? null,
       importedAt: bookmark.importedAt.toISOString(),
       mediaItems: bookmark.mediaItems.map((m) => ({

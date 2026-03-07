@@ -7,6 +7,7 @@ interface BookmarkRow {
   text: string
   authorHandle: string
   authorName: string
+  source: string
   tweetCreatedAt: Date | null
   importedAt: Date
   mediaItems: MediaItemRow[]
@@ -149,6 +150,7 @@ export async function exportAllBookmarksCsv(): Promise<string> {
     'tweetId',
     'text',
     'authorHandle',
+    'source',
     'categories',
     'tweetCreatedAt',
     'mediaUrls',
@@ -163,6 +165,7 @@ export async function exportAllBookmarksCsv(): Promise<string> {
       bookmark.tweetId,
       bookmark.text,
       bookmark.authorHandle,
+      bookmark.source,
       categories,
       dateStr,
       mediaUrls,
@@ -184,6 +187,7 @@ export async function exportBookmarksJson(bookmarkIds?: string[]): Promise<strin
     text: bookmark.text,
     authorHandle: bookmark.authorHandle,
     authorName: bookmark.authorName,
+    source: bookmark.source,
     tweetCreatedAt: bookmark.tweetCreatedAt?.toISOString() ?? null,
     importedAt: bookmark.importedAt.toISOString(),
     categories: bookmark.categories.map((c) => ({

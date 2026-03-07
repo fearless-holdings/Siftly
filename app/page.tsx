@@ -33,13 +33,15 @@ async function queryDashboard() {
     prisma.bookmark.count({ where: { categories: { none: {} } } }),
     prisma.bookmark.findMany(RECENT_QUERY),
     prisma.category.findMany(TOP_CATS_QUERY),
+    prisma.bookmark.count({ where: { source: 'bookmark' } }),
+    prisma.bookmark.count({ where: { source: 'like' } }),
   ])
 }
 
 type QueryResult = Awaited<ReturnType<typeof queryDashboard>>
 
 function buildDashboardData(result: QueryResult) {
-  const [totalBookmarks, totalCategories, totalMedia, uncategorizedCount, recentRaw, catsRaw] = result
+  const [totalBookmarks, totalCategories, totalMedia, uncategorizedCount, recentRaw, catsRaw, bookmarkSourceCount, likeSourceCount] = result
 
   const recentBookmarks: BookmarkWithMedia[] = recentRaw.map((b) => ({
     id: b.id,
@@ -61,6 +63,8 @@ function buildDashboardData(result: QueryResult) {
 
   return {
     totalBookmarks,
+    bookmarkSourceCount,
+    likeSourceCount,
     totalCategories,
     totalMedia,
     uncategorizedCount,
@@ -76,6 +80,8 @@ function buildDashboardData(result: QueryResult) {
 
 const EMPTY_DASHBOARD = {
   totalBookmarks: 0,
+  bookmarkSourceCount: 0,
+  likeSourceCount: 0,
   totalCategories: 0,
   totalMedia: 0,
   uncategorizedCount: 0,
@@ -166,7 +172,12 @@ export default async function DashboardPage() {
             <p className="text-zinc-400 mt-1.5">
               You have{' '}
               <span className="text-zinc-100 font-semibold">{data.totalBookmarks.toLocaleString()}</span>{' '}
-              bookmarks saved and ready to explore.
+              tweets saved and ready to explore.
+              {data.likeSourceCount > 0 && (
+                <span className="text-zinc-500">
+                  {' '}({data.bookmarkSourceCount.toLocaleString()} bookmarks, {data.likeSourceCount.toLocaleString()} likes)
+                </span>
+              )}
             </p>
           </div>
           {/* Quick Actions */}
@@ -199,7 +210,7 @@ export default async function DashboardPage() {
       {/* Stat Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          label="Total Bookmarks"
+          label={data.likeSourceCount > 0 ? `${data.bookmarkSourceCount.toLocaleString()} bookmarks · ${data.likeSourceCount.toLocaleString()} likes` : 'Total Bookmarks'}
           value={data.totalBookmarks}
           icon={BookmarkIcon}
           iconColor="text-indigo-400"
