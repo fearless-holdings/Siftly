@@ -120,6 +120,111 @@ New accounts include $5 free credit — enough for thousands of bookmarks at Hai
 
 ---
 
+## Multi-provider Setup (Quick)
+
+Siftly supports multiple AI backends. In `.env.local`, set a primary backend and only the credentials for that backend.
+
+### 1) Choose backend
+
+```bash
+SIFTLY_AI_BACKEND=anthropic
+```
+
+Valid values:
+- `anthropic`
+- `openai`
+- `openrouter`
+- `gemini`
+- `opencode`
+- `acp_cursor` (experimental)
+- `acp_amp` (experimental)
+
+### 2) Add credentials
+
+```bash
+# Anthropic
+ANTHROPIC_API_KEY=...
+
+# OpenAI
+OPENAI_API_KEY=...
+
+# OpenRouter
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=openai/gpt-5.4-mini
+
+# Gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.5-flash
+
+# OpenCode Zen / Go
+OPENCODE_API_KEY=...
+OPENCODE_CHAT_URL=https://opencode.ai/zen/v1/chat/completions
+OPENCODE_MODEL=gpt-5.4-mini
+```
+
+OpenCode note: `OPENCODE_CHAT_URL` must match the model family endpoint (`/chat/completions` vs `/messages`) from the [Zen docs](https://opencode.ai/docs/zen/) and [Go docs](https://opencode.ai/docs/go/).
+
+### 3) Optional fallback chain
+
+```bash
+# Resolution-time fallback (before request starts)
+SIFTLY_AI_FALLBACK=openrouter,gemini,anthropic
+
+# Runtime fallback on transient failures (optional)
+SIFTLY_AI_EXECUTION_FALLBACK=openrouter,gemini
+```
+
+### 4) Optional backend toggles
+
+```bash
+SIFTLY_AI_ENABLE_ANTHROPIC=1
+SIFTLY_AI_ENABLE_OPENAI=1
+SIFTLY_AI_ENABLE_OPENROUTER=1
+SIFTLY_AI_ENABLE_GEMINI=1
+SIFTLY_AI_ENABLE_OPENCODE=1
+SIFTLY_AI_ENABLE_ACP_CURSOR=0
+SIFTLY_AI_ENABLE_ACP_AMP=0
+```
+
+### 5) ACP (experimental)
+
+ACP is disabled by default. Enable explicitly:
+
+```bash
+SIFTLY_EXPERIMENTAL_ACP=1
+```
+
+Cursor ACP:
+
+```bash
+SIFTLY_AI_BACKEND=acp_cursor
+SIFTLY_ACP_CURSOR_COMMAND=agent
+SIFTLY_ACP_CURSOR_ARGS=acp
+SIFTLY_ACP_CURSOR_AUTH_METHOD=cursor_login
+```
+
+Amp ACP:
+
+```bash
+SIFTLY_AI_BACKEND=acp_amp
+SIFTLY_ACP_AMP_COMMAND=acp-amp
+```
+
+References:
+- [Cursor ACP](https://cursor.com/docs/cli/acp)
+- [acp-amp](https://superagenticai.github.io/acp-amp/)
+- [OpenRouter Quickstart](https://openrouter.ai/docs/quickstart)
+
+### 6) Verify effective backend
+
+- `GET /api/settings` shows effective backend + model
+- `GET /api/settings/cli-status` shows backend resolution details
+- `POST /api/settings/test` performs backend health checks
+
+Antigravity note: direct Antigravity OAuth is intentionally not enabled by default in this repo; treat it as an optional Phase 2/experimental integration due to ToS and account-risk concerns ([example project](https://github.com/NoeFabris/opencode-antigravity-auth)).
+
+---
+
 ## Importing Your Bookmarks
 
 Siftly has **built-in import tools** — no browser extensions required. Go to the **Import** page and choose either method:

@@ -14,7 +14,6 @@ import {
   Shield,
   ExternalLink,
   ChevronDown,
-  Zap,
   Copy,
   Coffee,
   Terminal,
@@ -385,7 +384,7 @@ function ClaudeCliStatusBox() {
   useEffect(() => {
     fetch('/api/settings/cli-status')
       .then((r) => r.json())
-      .then((d: CliStatus) => setStatus(d))
+      .then((d: { claude?: CliStatus }) => setStatus(d.claude ?? { available: false }))
       .catch(() => setStatus({ available: false }))
   }, [])
 
@@ -524,12 +523,36 @@ function ProviderToggle({ value, onChange }: { value: 'anthropic' | 'openai'; on
 
 function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
   const [provider, setProvider] = useState<'anthropic' | 'openai' | null>(null)
+  const [effectiveBackend, setEffectiveBackend] = useState<{
+    backend: string
+    model: string
+    resolutionSource: string
+  } | null>(null)
+  const [envBackendOverride, setEnvBackendOverride] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/settings')
       .then((r) => r.json())
-      .then((d: { provider?: string }) => {
-        setProvider(d.provider === 'openai' ? 'openai' : 'anthropic')
+      .then((d: {
+        provider?: string
+        savedProvider?: string | null
+        envBackendOverride?: string | null
+        effectiveBackend?: { backend?: string; model?: string; resolutionSource?: string }
+      }) => {
+        const saved = d.savedProvider === 'openai' || d.savedProvider === 'anthropic'
+          ? d.savedProvider
+          : null
+        setProvider(saved ?? (d.provider === 'openai' ? 'openai' : 'anthropic'))
+        setEnvBackendOverride(typeof d.envBackendOverride === 'string' ? d.envBackendOverride : null)
+        if (d.effectiveBackend?.backend && d.effectiveBackend?.model && d.effectiveBackend?.resolutionSource) {
+          setEffectiveBackend({
+            backend: d.effectiveBackend.backend,
+            model: d.effectiveBackend.model,
+            resolutionSource: d.effectiveBackend.resolutionSource,
+          })
+        } else {
+          setEffectiveBackend(null)
+        }
       })
       .catch(() => setProvider('anthropic'))
   }, [])
@@ -572,6 +595,25 @@ function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
       title="AI Provider"
       description="Choose your AI provider and configure keys. CLI auth means no key needed."
     >
+      {effectiveBackend && (
+        <div className="mb-4 p-3.5 rounded-xl bg-zinc-800/60 border border-zinc-700">
+          <p className="text-xs uppercase tracking-wide text-zinc-500 mb-1">Effective backend</p>
+          <p className="text-sm text-zinc-200">
+            <span className="font-medium">{effectiveBackend.backend}</span>
+            <span className="text-zinc-500"> · </span>
+            <span className="font-mono text-zinc-300">{effectiveBackend.model}</span>
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            Resolution source: <span className="text-zinc-300">{effectiveBackend.resolutionSource}</span>
+          </p>
+          {envBackendOverride && (
+            <p className="text-xs text-amber-400/90 mt-1.5">
+              `SIFTLY_AI_BACKEND` is set to <span className="font-mono">{envBackendOverride}</span>. The toggle below stores a fallback preference for Anthropic/OpenAI only.
+            </p>
+          )}
+        </div>
+      )}
+
       <ProviderToggle value={provider} onChange={(v) => void handleProviderChange(v)} />
 
       {provider === 'anthropic' ? (
@@ -752,14 +794,6 @@ function DangerZoneSection({ onToast }: { onToast: (t: Toast) => void }) {
     </Section>
   )
 }
-
-const TECH_STACK = [
-  { label: 'Next.js 15', color: 'bg-zinc-800 text-zinc-300 border-zinc-700' },
-  { label: 'Prisma + SQLite', color: 'bg-zinc-800 text-zinc-300 border-zinc-700' },
-  { label: 'Anthropic / OpenAI', color: 'bg-blue-500/10 text-blue-300 border-blue-500/20' },
-  { label: 'React Flow', color: 'bg-zinc-800 text-zinc-300 border-zinc-700' },
-  { label: 'Tailwind CSS', color: 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' },
-]
 
 const DONATION_ADDRESS = '0xcF10B967a9e422753812004Cd59990f62E360760'
 

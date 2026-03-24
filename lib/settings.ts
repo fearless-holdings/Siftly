@@ -1,6 +1,5 @@
 import prisma from '@/lib/db'
-import { getCliAuthStatus, getCliAvailability } from '@/lib/claude-cli-auth'
-import { getCodexCliAuthStatus, getCodexCliAvailability } from '@/lib/openai-auth'
+import { resolveAiBackend, toLegacyProvider, type ResolvedAiBackend } from '@/lib/ai-backend'
 
 // Module-level caches — avoids hundreds of DB roundtrips per pipeline run
 let _cachedModel: string | null = null
@@ -9,8 +8,8 @@ let _modelCacheExpiry = 0
 let _cachedSavedProvider: 'anthropic' | 'openai' | null | undefined = undefined
 let _savedProviderCacheExpiry = 0
 
-let _cachedEffectiveProvider: 'anthropic' | 'openai' | null = null
-let _effectiveProviderCacheExpiry = 0
+let _cachedResolvedBackend: ResolvedAiBackend | null = null
+let _resolvedBackendCacheExpiry = 0
 
 let _cachedOpenAIModel: string | null = null
 let _openAIModelCacheExpiry = 0
@@ -42,47 +41,16 @@ export async function getSavedProvider(): Promise<'anthropic' | 'openai' | null>
 }
 
 /**
- * Get the effective AI provider using autodetection:
- * 1. If aiProvider is explicitly saved, use it
- * 2. Otherwise prefer Anthropic if Claude CLI auth is available
- * 3. Otherwise use OpenAI if Codex/OpenAI auth is available
- * 4. Default to Anthropic as fallback
- * 
- * Cached for 5 minutes to avoid repeated auth checks.
+ * Get the effective AI provider after backend resolution.
  */
 export async function getProvider(): Promise<'anthropic' | 'openai'> {
-  if (_cachedEffectiveProvider && Date.now() < _effectiveProviderCacheExpiry) {
-    return _cachedEffectiveProvider
+  try {
+    const backend = await getResolvedBackend()
+    return toLegacyProvider(backend.backend)
+  } catch {
+    const saved = await getSavedProvider()
+    return saved ?? 'anthropic'
   }
-
-  const saved = await getSavedProvider()
-  if (saved) {
-    _cachedEffectiveProvider = saved
-    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
-    return _cachedEffectiveProvider
-  }
-
-  // No manual override — autodetect
-  // Prefer Anthropic if Claude CLI is available
-  const claudeStatus = getCliAuthStatus()
-  if (claudeStatus.available && !claudeStatus.expired) {
-    _cachedEffectiveProvider = 'anthropic'
-    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
-    return _cachedEffectiveProvider
-  }
-
-  // Otherwise try Codex/OpenAI
-  const codexStatus = getCodexCliAuthStatus()
-  if (codexStatus.available && !codexStatus.expired && await getCodexCliAvailability()) {
-    _cachedEffectiveProvider = 'openai'
-    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
-    return _cachedEffectiveProvider
-  }
-
-  // Default to Anthropic as fallback
-  _cachedEffectiveProvider = 'anthropic'
-  _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
-  return _cachedEffectiveProvider
 }
 
 /**
@@ -100,8 +68,25 @@ export async function getOpenAIModel(): Promise<string> {
  * Get the model for the currently active provider.
  */
 export async function getActiveModel(): Promise<string> {
-  const provider = await getProvider()
-  return provider === 'openai' ? getOpenAIModel() : getAnthropicModel()
+  try {
+    const backend = await getResolvedBackend()
+    return backend.model
+  } catch {
+    const provider = await getProvider()
+    return provider === 'openai' ? getOpenAIModel() : getAnthropicModel()
+  }
+}
+
+/**
+ * Full backend context resolved once per request lifecycle.
+ */
+export async function getResolvedBackend(): Promise<ResolvedAiBackend> {
+  if (_cachedResolvedBackend && Date.now() < _resolvedBackendCacheExpiry) {
+    return _cachedResolvedBackend
+  }
+  _cachedResolvedBackend = await resolveAiBackend()
+  _resolvedBackendCacheExpiry = Date.now() + CACHE_TTL
+  return _cachedResolvedBackend
 }
 
 /**
@@ -112,8 +97,8 @@ export function invalidateSettingsCache(): void {
   _modelCacheExpiry = 0
   _cachedSavedProvider = undefined
   _savedProviderCacheExpiry = 0
-  _cachedEffectiveProvider = null
-  _effectiveProviderCacheExpiry = 0
+  _cachedResolvedBackend = null
+  _resolvedBackendCacheExpiry = 0
   _cachedOpenAIModel = null
   _openAIModelCacheExpiry = 0
 }

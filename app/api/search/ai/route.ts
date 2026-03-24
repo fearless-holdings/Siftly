@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { hybridSearchPipeline, buildBookmarkResponse, type SearchResult } from '@/lib/search-pipeline'
-import { AIClient, resolveAIClient } from '@/lib/ai-client'
-import { getActiveModel, getProvider } from '@/lib/settings'
+import { hybridSearchPipeline, buildBookmarkResponse } from '@/lib/search-pipeline'
+import { resolveAiBackend } from '@/lib/ai-backend'
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
 interface CacheEntry {
@@ -49,19 +48,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    // Get active model and provider for potential reranking
-    const model = await getActiveModel()
-    const provider = await getProvider()
-
-    let client: AIClient | null = null
+    let resolved: Awaited<ReturnType<typeof resolveAiBackend>> | undefined
     try {
-      client = await resolveAIClient({})
+      resolved = await resolveAiBackend()
     } catch {
-      // Will use retrieval-only results
+      // No AI backend available — retrieval-only results
     }
 
     // Run the hybrid search pipeline
-    const searchResults = await hybridSearchPipeline(query, category, client, model)
+    const searchResults = await hybridSearchPipeline(query, category, resolved)
 
     if (searchResults.length === 0) {
       const response = { bookmarks: [], explanation: 'No bookmarks found matching your query.' }
@@ -70,7 +65,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // Format results with bookmark data
-    const bookmarkIds = searchResults.map((r) => r.bookmarkId)
     const bookmarks = await Promise.all(
       searchResults.map(async (searchResult) => {
         // Fetch full bookmark data

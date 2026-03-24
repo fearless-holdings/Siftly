@@ -6,7 +6,8 @@
 import prisma from '@/lib/db'
 import { ftsSearchBookmarks, ftsSearchPassages } from '@/lib/fts'
 import { extractKeywords } from '@/lib/search-utils'
-import { AIClient } from '@/lib/ai-client'
+import { ResolvedAiBackend } from '@/lib/ai-backend'
+import { expandQuery as expandQueryWithAi } from '@/lib/search-expansion'
 
 /**
  * Query variants for multi-round retrieval: original, keyword-reduced, AI-paraphrase.
@@ -120,10 +121,16 @@ function normalizeRrfScores(results: Map<string, RrfResult>): void {
 export async function hybridSearchPipeline(
   query: string,
   categoryFilter?: string,
-  client?: AIClient | null,
-  rerankerModel?: string,
+  resolved?: ResolvedAiBackend,
 ): Promise<SearchResult[]> {
-  const variant = expandQuery(query)
+  const aiVariants = resolved ? await expandQueryWithAi(query, resolved) : null
+  const variant: QueryVariant = aiVariants
+    ? {
+        original: aiVariants.original,
+        keywordReduced: aiVariants.reduced,
+        aiParaphrase: aiVariants.paraphrase !== aiVariants.original ? aiVariants.paraphrase : undefined,
+      }
+    : expandQuery(query)
 
   // ─── Step 1: Parallel FTS retrieval for original and keyword-reduced ─────
   const [
@@ -131,16 +138,25 @@ export async function hybridSearchPipeline(
     origPassageResults,
     reducedBookmarkIds,
     reducedPassageResults,
+    paraphraseBookmarkIds,
+    paraphrasePassageResults,
   ] = await Promise.all([
     ftsSearchBookmarks(extractKeywords(variant.original)),
     ftsSearchPassages(extractKeywords(variant.original)),
     ftsSearchBookmarks(extractKeywords(variant.keywordReduced)),
     ftsSearchPassages(extractKeywords(variant.keywordReduced)),
+    variant.aiParaphrase
+      ? ftsSearchBookmarks(extractKeywords(variant.aiParaphrase))
+      : Promise.resolve([] as string[]),
+    variant.aiParaphrase
+      ? ftsSearchPassages(extractKeywords(variant.aiParaphrase))
+      : Promise.resolve([] as Awaited<ReturnType<typeof ftsSearchPassages>>),
   ])
 
   // Extract unique bookmark IDs from passage results
   const origPassageBookmarkIds = [...new Set(origPassageResults.map((p) => p.bookmarkId))]
   const reducedPassageBookmarkIds = [...new Set(reducedPassageResults.map((p) => p.bookmarkId))]
+  const paraphrasePassageBookmarkIds = [...new Set(paraphrasePassageResults.map((p) => p.bookmarkId))]
 
   // ─── Step 2: Reciprocal Rank Fusion (double-weight original) ─────────────
   const rrfResults = reciprocalRankFusion([
@@ -148,6 +164,8 @@ export async function hybridSearchPipeline(
     { name: 'original_passages', weight: 2.0, ids: origPassageBookmarkIds },
     { name: 'reduced_bookmarks', weight: 1.0, ids: reducedBookmarkIds },
     { name: 'reduced_passages', weight: 1.0, ids: reducedPassageBookmarkIds },
+    { name: 'paraphrase_bookmarks', weight: 1.5, ids: paraphraseBookmarkIds },
+    { name: 'paraphrase_passages', weight: 1.5, ids: paraphrasePassageBookmarkIds },
   ])
 
   normalizeRrfScores(rrfResults)

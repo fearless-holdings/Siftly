@@ -1,7 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import prisma from '@/lib/db'
-import { resolveAnthropicClient, getCliAuthStatus } from '@/lib/claude-cli-auth'
-import { resolveOpenAIClient } from '@/lib/openai-auth'
+import { resolveAiBackend, type AiBackendId } from '@/lib/ai-backend'
+
+function normalizeBackend(value: string | undefined): AiBackendId | null {
+  if (!value) return null
+  const normalized = value.trim().toLowerCase()
+  if (
+    normalized === 'anthropic' ||
+    normalized === 'openai' ||
+    normalized === 'openrouter' ||
+    normalized === 'gemini' ||
+    normalized === 'opencode' ||
+    normalized === 'acp_cursor' ||
+    normalized === 'acp_amp'
+  ) {
+    return normalized
+  }
+  return null
+}
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   let body: { provider?: string } = {}
@@ -12,69 +27,55 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  const provider = body.provider ?? 'anthropic'
+  const requested = normalizeBackend(body.provider)
+  if (body.provider && !requested && body.provider !== 'auto') {
+    return NextResponse.json({ error: 'Unknown provider/backend' }, { status: 400 })
+  }
 
-  if (provider === 'anthropic') {
-    const setting = await prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } })
-    const dbKey = setting?.value?.trim()
+  try {
+    const resolved = await resolveAiBackend({
+      ...(requested ? { preferredBackend: requested } : {}),
+      ...(requested ? { allowFallback: false } : {}),
+    })
 
-    let client
-    try {
-      client = resolveAnthropicClient({ dbKey })
-    } catch {
-      const cliStatus = getCliAuthStatus()
-      if (cliStatus.available && cliStatus.expired) {
-        return NextResponse.json({ working: false, error: 'Claude CLI session expired — run `claude` to refresh' })
+    if (!resolved.client) {
+      if (resolved.capabilities.cliPrompt !== 'none') {
+        return NextResponse.json({
+          working: true,
+          backend: resolved.backend,
+          mode: 'cli-only',
+          model: resolved.model,
+          resolutionSource: resolved.resolutionSource,
+        })
       }
-      return NextResponse.json({ working: false, error: 'No API key found. Add one in Settings or log in with Claude CLI.' })
-    }
-
-    try {
-      await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 5,
-        messages: [{ role: 'user', content: 'hi' }],
+      return NextResponse.json({
+        working: false,
+        backend: resolved.backend,
+        mode: 'no-client',
+        error: `No API client available for backend "${resolved.backend}".`,
       })
-      return NextResponse.json({ working: true })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      const friendly = msg.includes('401') || msg.includes('invalid_api_key')
-        ? 'Invalid API key'
-        : msg.includes('403')
-        ? 'Key does not have permission'
-        : msg.slice(0, 120)
-      return NextResponse.json({ working: false, error: friendly })
     }
+
+    await resolved.client.createMessage({
+      model: resolved.model,
+      max_tokens: 8,
+      messages: [{ role: 'user', content: 'Reply with only OK' }],
+    })
+
+    return NextResponse.json({
+      working: true,
+      backend: resolved.backend,
+      mode: 'api',
+      model: resolved.model,
+      resolutionSource: resolved.resolutionSource,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const friendly = msg.includes('401') || msg.includes('invalid_api_key')
+      ? 'Invalid API key'
+      : msg.includes('403')
+      ? 'Key/account does not have permission'
+      : msg.slice(0, 180)
+    return NextResponse.json({ working: false, error: friendly })
   }
-
-  if (provider === 'openai') {
-    const setting = await prisma.setting.findUnique({ where: { key: 'openaiApiKey' } })
-    const dbKey = setting?.value?.trim()
-
-    let client
-    try {
-      client = resolveOpenAIClient({ dbKey })
-    } catch {
-      return NextResponse.json({ working: false, error: 'No OpenAI API key found. Add one in Settings or set up Codex CLI.' })
-    }
-
-    try {
-      await client.chat.completions.create({
-        model: 'gpt-5.4-mini',
-        max_tokens: 5,
-        messages: [{ role: 'user', content: 'hi' }],
-      })
-      return NextResponse.json({ working: true })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      const friendly = msg.includes('401') || msg.includes('invalid_api_key')
-        ? 'Invalid API key'
-        : msg.includes('403')
-        ? 'Key does not have permission'
-        : msg.slice(0, 120)
-      return NextResponse.json({ working: false, error: friendly })
-    }
-  }
-
-  return NextResponse.json({ error: 'Unknown provider' }, { status: 400 })
 }

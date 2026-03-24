@@ -2,10 +2,7 @@ import prisma from '@/lib/db'
 import { buildImageContext } from '@/lib/image-context'
 import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/claude-cli-auth'
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
-import { getActiveModel, getProvider } from '@/lib/settings'
-import { AIClient } from '@/lib/ai-client'
-
-export { getActiveModel } from '@/lib/settings'
+import { executeWithBackendFallback, ResolvedAiBackend } from '@/lib/ai-backend'
 
 type AllowedMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
 
@@ -74,59 +71,82 @@ const CONCURRENCY = 12
  * CLI-based vision analysis: passes the image URL in the prompt text.
  * Works with Codex CLI (ChatGPT OAuth) and Claude CLI without needing SDK access.
  */
-async function analyzeImageViaCli(imageUrl: string): Promise<string> {
-  const provider = await getProvider()
+async function analyzeImageViaCli(imageUrl: string, resolved: ResolvedAiBackend): Promise<string> {
   // Sanitize URL: strip control characters and newlines to prevent prompt injection
   const safeUrl = imageUrl.replace(/[\r\n\t]/g, '').trim()
   if (!safeUrl.startsWith('http://') && !safeUrl.startsWith('https://')) return ''
   const urlPrompt = `Look at this image URL and analyze it: ${safeUrl}\n\n${ANALYSIS_PROMPT}`
 
-  if (provider === 'openai') {
+  if (resolved.capabilities.cliPrompt === 'codex') {
     if (!(await getCodexCliAvailability())) return ''
     const result = await codexPrompt(urlPrompt, { timeoutMs: 60_000 })
     if (!result.success || !result.data) return ''
     const jsonMatch = result.data.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return ''
     try { JSON.parse(jsonMatch[0]); return jsonMatch[0] } catch { return '' }
-  } else {
+  } else if (resolved.capabilities.cliPrompt === 'claude') {
     if (!(await getCliAvailability())) return ''
-    const model = await getActiveModel()
-    const cliModel = modelNameToCliAlias(model)
+    const cliModel = modelNameToCliAlias(resolved.model)
     const result = await claudePrompt(urlPrompt, { model: cliModel, timeoutMs: 60_000 })
     if (!result.success || !result.data) return ''
     const jsonMatch = result.data.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return ''
     try { JSON.parse(jsonMatch[0]); return jsonMatch[0] } catch { return '' }
   }
+
+  if (resolved.client && resolved.capabilities.urlOnlyVisionFallback) {
+    const response = await executeWithBackendFallback(resolved, async (ctx) => {
+      if (!ctx.client) throw new Error(`No AI client available for backend "${ctx.backend}"`)
+      return ctx.client.createMessage({
+        model: ctx.model,
+        max_tokens: 700,
+        messages: [{ role: 'user', content: urlPrompt }],
+      })
+    })
+    const jsonMatch = response.text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return ''
+    try { JSON.parse(jsonMatch[0]); return jsonMatch[0] } catch { return '' }
+  }
+  return ''
 }
 
 async function analyzeImageWithRetry(
   url: string,
-  client: AIClient | null,
-  model: string,
+  resolved: ResolvedAiBackend,
   attempt = 0,
 ): Promise<string> {
   // If no SDK client, use CLI path with image URL
-  if (!client) {
-    return attempt === 0 ? analyzeImageViaCli(url) : ''
+  if (!resolved.client) {
+    return attempt === 0 && resolved.capabilities.urlOnlyVisionFallback
+      ? analyzeImageViaCli(url, resolved)
+      : ''
+  }
+
+  if (!resolved.capabilities.inlineImages) {
+    return attempt === 0 && resolved.capabilities.urlOnlyVisionFallback
+      ? analyzeImageViaCli(url, resolved)
+      : ''
   }
 
   const img = await fetchImageAsBase64(url)
   if (!img) return ''
 
   try {
-    const response = await client.createMessage({
-      model,
-      max_tokens: 700,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } },
-            { type: 'text', text: ANALYSIS_PROMPT },
-          ],
-        },
-      ],
+    const response = await executeWithBackendFallback(resolved, async (ctx) => {
+      if (!ctx.client) throw new Error(`No AI client available for backend "${ctx.backend}"`)
+      return ctx.client.createMessage({
+        model: ctx.model,
+        max_tokens: 700,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } },
+              { type: 'text', text: ANALYSIS_PROMPT },
+            ],
+          },
+        ],
+      })
     })
     const raw = response.text?.trim() ?? ''
     if (!raw) return ''
@@ -160,7 +180,7 @@ async function analyzeImageWithRetry(
 
     if (isRetryable && attempt < RETRY_DELAYS_MS.length) {
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]))
-      return analyzeImageWithRetry(url, client, model, attempt + 1)
+      return analyzeImageWithRetry(url, resolved, attempt + 1)
     }
     return ''
   }
@@ -187,8 +207,7 @@ async function getCachedAnalysis(imageUrl: string, excludeId: string): Promise<s
 
 export async function analyzeItem(
   item: MediaItemForAnalysis,
-  client: AIClient | null,
-  model: string,
+  resolved: ResolvedAiBackend,
 ): Promise<number> {
   const imageUrl = item.type === 'video' ? (item.thumbnailUrl ?? item.url) : item.url
 
@@ -200,7 +219,7 @@ export async function analyzeItem(
   }
 
   const prefix = item.type === 'video' ? '{"_type":"video_thumbnail",' : ''
-  let tags = await analyzeImageWithRetry(imageUrl, client, model)
+  let tags = await analyzeImageWithRetry(imageUrl, resolved)
 
   if (tags && prefix) {
     // Inject a _type marker into the JSON for video thumbnails
@@ -239,18 +258,16 @@ export async function runWithConcurrency<T>(
 
 export async function analyzeBatch(
   items: MediaItemForAnalysis[],
-  client: AIClient | null,
+  resolved: ResolvedAiBackend,
   onProgress?: (delta: number) => void,
   shouldAbort?: () => boolean,
 ): Promise<number> {
   const analyzable = items.filter((m) => m.type === 'photo' || m.type === 'gif' || m.type === 'video')
   if (analyzable.length === 0) return 0
 
-  const model = await getActiveModel()
-
   const tasks = analyzable.map((item) => async () => {
     if (shouldAbort?.()) return 0
-    const result = await analyzeItem(item, client, model)
+    const result = await analyzeItem(item, resolved)
     onProgress?.(1)
     return result
   })
@@ -259,21 +276,21 @@ export async function analyzeBatch(
   return results.reduce((sum, r) => sum + r, 0)
 }
 
-export async function analyzeUntaggedImages(client: AIClient, limit = 10): Promise<number> {
+export async function analyzeUntaggedImages(resolved: ResolvedAiBackend, limit = 10): Promise<number> {
   const untagged = await prisma.mediaItem.findMany({
     where: { imageTags: null, type: { in: ['photo', 'gif', 'video'] } },
     take: limit,
     select: { id: true, url: true, thumbnailUrl: true, type: true },
   })
   if (untagged.length === 0) return 0
-  return analyzeBatch(untagged, client)
+  return analyzeBatch(untagged, resolved)
 }
 
 /**
  * Analyze ALL untagged media items (no limit). Used during full AI categorization.
  */
 export async function analyzeAllUntagged(
-  client: AIClient,
+  resolved: ResolvedAiBackend,
   onProgress?: (total: number) => void,
   shouldAbort?: () => boolean,
 ): Promise<number> {
@@ -302,7 +319,7 @@ export async function analyzeAllUntagged(
 
     cursor = untagged[untagged.length - 1].id
 
-    await analyzeBatch(untagged, client, (delta) => {
+    await analyzeBatch(untagged, resolved, (delta) => {
       total += delta
       onProgress?.(total)
     }, shouldAbort)
@@ -373,13 +390,11 @@ ${JSON.stringify(items, null, 1)}`
 
 export async function enrichBatchSemanticTags(
   bookmarks: BookmarkForEnrichment[],
-  client: AIClient | null,
+  resolved: ResolvedAiBackend,
 ): Promise<EnrichmentResult[]> {
   if (bookmarks.length === 0) return []
 
   const prompt = buildEnrichmentPrompt(bookmarks)
-  const provider = await getProvider()
-
   // Helper to parse enrichment response
   const parseResponse = (text: string): EnrichmentResult[] => {
     const match = text.match(/\[[\s\S]*\]/)
@@ -396,7 +411,7 @@ export async function enrichBatchSemanticTags(
   }
 
   // Prefer CLI over SDK
-  if (provider === 'openai') {
+  if (resolved.capabilities.cliPrompt === 'codex') {
     if (await getCodexCliAvailability()) {
       const result = await codexPrompt(prompt, { timeoutMs: 90_000 })
       if (result.success && result.data) {
@@ -404,10 +419,9 @@ export async function enrichBatchSemanticTags(
         catch { console.warn('[enrich] Codex CLI response parse failed, falling back to SDK') }
       }
     }
-  } else {
+  } else if (resolved.capabilities.cliPrompt === 'claude') {
     if (await getCliAvailability()) {
-      const model = await getActiveModel()
-      const cliModel = modelNameToCliAlias(model)
+      const cliModel = modelNameToCliAlias(resolved.model)
 
       const result = await claudePrompt(prompt, { model: cliModel, timeoutMs: 90_000 })
       if (result.success && result.data) {
@@ -418,20 +432,22 @@ export async function enrichBatchSemanticTags(
   }
 
   // Fallback to SDK
-  if (!client) {
+  if (!resolved.client) {
     console.warn('[enrich] CLI not available and no API client')
     return []
   }
 
-  const model = await getActiveModel()
   const ENRICH_RETRY_DELAYS = [2000, 5000]
 
   for (let attempt = 0; attempt <= ENRICH_RETRY_DELAYS.length; attempt++) {
     try {
-      const response = await client.createMessage({
-        model,
-        max_tokens: 4096,
-        messages: [{ role: 'user', content: prompt }],
+      const response = await executeWithBackendFallback(resolved, async (ctx) => {
+        if (!ctx.client) throw new Error(`No AI client available for backend "${ctx.backend}"`)
+        return ctx.client.createMessage({
+          model: ctx.model,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: prompt }],
+        })
       })
       const results = parseResponse(response.text)
       if (results.length > 0) return results
@@ -453,7 +469,7 @@ export async function enrichBatchSemanticTags(
  * with ENRICH_CONCURRENCY parallel batches — 5-10x fewer API calls vs. per-bookmark.
  */
 export async function enrichAllBookmarks(
-  client: AIClient,
+  resolved: ResolvedAiBackend,
   onProgress?: (total: number) => void,
   shouldAbort?: () => boolean,
 ): Promise<number> {
@@ -521,7 +537,7 @@ export async function enrichAllBookmarks(
     const batchTasks = batches.map((batch) => async () => {
       if (shouldAbort?.()) return
 
-      const results = await enrichBatchSemanticTags(batch, client)
+      const results = await enrichBatchSemanticTags(batch, resolved)
       const resultMap = new Map(results.map((r) => [r.id, r]))
 
       for (const b of batch) {
@@ -562,12 +578,12 @@ export async function enrichBookmarkSemanticTags(
   bookmarkId: string,
   tweetText: string,
   imageTags: string[],
-  client: AIClient,
+  resolved: ResolvedAiBackend,
   entities?: BookmarkForEnrichment['entities'],
 ): Promise<string[]> {
   const results = await enrichBatchSemanticTags(
     [{ id: bookmarkId, text: tweetText, imageTags, entities }],
-    client,
+    resolved,
   )
   const result = results[0]
   if (!result?.tags.length) return []

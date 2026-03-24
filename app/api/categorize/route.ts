@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
-import { AIClient, resolveAIClient } from '@/lib/ai-client'
-import { getActiveModel, getProvider } from '@/lib/settings'
+import { invalidateSettingsCache } from '@/lib/settings'
+import { resolveAiBackend, type AiBackendId } from '@/lib/ai-backend'
 import {
   seedDefaultCategories,
   categorizeBatch,
@@ -95,6 +95,15 @@ export async function DELETE(): Promise<NextResponse> {
 const PIPELINE_WORKERS = 5
 const CAT_BATCH_SIZE = 25
 
+function dbKeySlotForBackend(backend: AiBackendId): string | null {
+  if (backend === 'anthropic') return 'anthropicApiKey'
+  if (backend === 'openai') return 'openaiApiKey'
+  if (backend === 'openrouter') return 'openrouterApiKey'
+  if (backend === 'gemini') return 'geminiApiKey'
+  if (backend === 'opencode') return 'opencodeApiKey'
+  return null
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   if (getState().status === 'running' || getState().status === 'stopping') {
     return NextResponse.json({ error: 'Categorization is already running' }, { status: 409 })
@@ -111,13 +120,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const { bookmarkIds = [], apiKey, force = false } = body
 
   if (apiKey && typeof apiKey === 'string' && apiKey.trim() !== '') {
-    const currentProvider = await getProvider()
-    const keySlot = currentProvider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey'
-    await prisma.setting.upsert({
-      where: { key: keySlot },
-      update: { value: apiKey.trim() },
-      create: { key: keySlot, value: apiKey.trim() },
-    })
+    let current: Awaited<ReturnType<typeof resolveAiBackend>>
+    try {
+      current = await resolveAiBackend()
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : 'Unable to resolve active backend' },
+        { status: 400 },
+      )
+    }
+    const keySlot = dbKeySlotForBackend(current.backend)
+    if (!keySlot) {
+      return NextResponse.json(
+        { error: `Inline apiKey is not supported for backend "${current.backend}". Use environment variables for this backend.` },
+        { status: 400 },
+      )
+    }
+    await prisma.setting.upsert({ where: { key: keySlot }, update: { value: apiKey.trim() }, create: { key: keySlot, value: apiKey.trim() } })
+    invalidateSettingsCache()
   }
 
   globalState.categorizationAbort = false
@@ -145,24 +165,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     error: null,
   })
 
-  const provider = await getProvider()
-  const keyName = provider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey'
-  const dbApiKey =
-    (await prisma.setting.findUnique({ where: { key: keyName } }))?.value?.trim() || ''
+  let resolved: Awaited<ReturnType<typeof resolveAiBackend>>
+  try {
+    resolved = await resolveAiBackend()
+  } catch (err) {
+    setState({ status: 'idle', stage: null, error: err instanceof Error ? err.message : String(err) })
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'No AI backend available' }, { status: 400 })
+  }
 
   void (async () => {
     const counts = { visionTagged: 0, entitiesExtracted: 0, enriched: 0, categorized: 0 }
     let bookmarkIdsToProcess: string[] = []
 
     try {
-      let client: AIClient | null = null
-      try {
-        client = await resolveAIClient({ dbKey: dbApiKey })
-      } catch {
-        // SDK client not available — CLI path may still work (e.g. ChatGPT OAuth via codex exec)
-        console.warn('No SDK client available — will rely on CLI path')
-      }
-
         await seedDefaultCategories()
 
         if (force) {
@@ -211,8 +226,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           const categoryDescriptions = Object.fromEntries(
             dbCategories.map((c) => [c.slug, c.description?.trim() || c.name]),
           )
-          const model = await getActiveModel()
-
           // Shared categorization queue (JS single-threaded: splice is atomic vs async)
           const catPending: string[] = []
           let catFlushing = false
@@ -239,7 +252,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 })
                 const batch = rows.map(mapBookmarkForCategorization)
                 try {
-                  const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
+                  const results = await categorizeBatch(batch, resolved, categoryDescriptions, allSlugs)
                   await writeCategoryResults(results)
                   counts.categorized += ids.length
                   setState({ stageCounts: { ...counts } })
@@ -280,8 +293,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               try {
                 await analyzeItem(
                   { id: media.id, url: media.url, thumbnailUrl: media.thumbnailUrl, type: media.type },
-                  client,
-                  model,
+                  resolved,
                 )
                 anyVisionRan = true
                 counts.visionTagged++
@@ -320,7 +332,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
                 try {
                   const results = await enrichBatchSemanticTags(
                     [{ id: bm.id, text: bm.text, imageTags, entities }],
-                    client,
+                    resolved,
                   )
                   const result = results[0]
                   if (result?.tags.length) {

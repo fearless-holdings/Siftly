@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { invalidateSettingsCache, getProvider, getSavedProvider } from '@/lib/settings'
+import { getEffectiveBackendSummary } from '@/lib/ai-backend'
 
 function maskKey(raw: string | null): string | null {
   if (!raw) return null
@@ -24,27 +25,39 @@ const ALLOWED_OPENAI_MODELS = [
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const [anthropic, anthropicModel, savedProvider, openai, openaiModel, xClientId, xClientSecret, effectiveProvider] = await Promise.all([
+    const [anthropic, anthropicModel, savedProvider, openai, openaiModel, openrouter, gemini, opencode, xClientId, xClientSecret, effectiveProvider, effectiveBackend] = await Promise.all([
       prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'anthropicModel' } }),
       getSavedProvider(),
       prisma.setting.findUnique({ where: { key: 'openaiApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'openaiModel' } }),
+      prisma.setting.findUnique({ where: { key: 'openrouterApiKey' } }),
+      prisma.setting.findUnique({ where: { key: 'geminiApiKey' } }),
+      prisma.setting.findUnique({ where: { key: 'opencodeApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_id' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_secret' } }),
       getProvider(),
+      getEffectiveBackendSummary(),
     ])
 
     return NextResponse.json({
       provider: effectiveProvider,
       savedProvider: savedProvider ?? null,
       providerMode: savedProvider ? 'manual' : 'auto',
+      effectiveBackend,
+      envBackendOverride: process.env.SIFTLY_AI_BACKEND?.trim() || null,
       anthropicApiKey: maskKey(anthropic?.value ?? null),
       hasAnthropicKey: anthropic !== null,
       anthropicModel: anthropicModel?.value ?? 'claude-haiku-4-5-20251001',
       openaiApiKey: maskKey(openai?.value ?? null),
       hasOpenaiKey: openai !== null,
       openaiModel: openaiModel?.value ?? 'gpt-5.4-mini',
+      openrouterApiKey: maskKey(openrouter?.value ?? null),
+      hasOpenrouterKey: openrouter !== null,
+      geminiApiKey: maskKey(gemini?.value ?? null),
+      hasGeminiKey: gemini !== null,
+      opencodeApiKey: maskKey(opencode?.value ?? null),
+      hasOpencodeKey: opencode !== null,
       xOAuthClientId: maskKey(xClientId?.value ?? null),
       xOAuthClientSecret: maskKey(xClientSecret?.value ?? null),
       hasXOAuth: !!xClientId?.value,
@@ -65,6 +78,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     provider?: string
     openaiApiKey?: string
     openaiModel?: string
+    openrouterApiKey?: string
+    geminiApiKey?: string
+    opencodeApiKey?: string
     xOAuthClientId?: string
     xOAuthClientSecret?: string
   } = {}
@@ -74,7 +90,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { anthropicApiKey, anthropicModel, provider, openaiApiKey, openaiModel } = body
+  const {
+    anthropicApiKey,
+    anthropicModel,
+    provider,
+    openaiApiKey,
+    openaiModel,
+    openrouterApiKey,
+    geminiApiKey,
+    opencodeApiKey,
+  } = body
 
   // Save provider if provided
   if (provider !== undefined) {
@@ -164,6 +189,29 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // Save non-primary backend keys (env-first setup can still use DB as override)
+  const additionalKeys: Array<{ key: 'openrouterApiKey' | 'geminiApiKey' | 'opencodeApiKey'; value?: string }> = [
+    { key: 'openrouterApiKey', value: openrouterApiKey },
+    { key: 'geminiApiKey', value: geminiApiKey },
+    { key: 'opencodeApiKey', value: opencodeApiKey },
+  ]
+  const additionalToSave = additionalKeys.filter((entry) => entry.value !== undefined)
+  if (additionalToSave.length > 0) {
+    for (const entry of additionalToSave) {
+      const raw = entry.value?.trim() ?? ''
+      if (!raw) {
+        return NextResponse.json({ error: `Invalid ${entry.key} value` }, { status: 400 })
+      }
+      await prisma.setting.upsert({
+        where: { key: entry.key },
+        update: { value: raw },
+        create: { key: entry.key, value: raw },
+      })
+    }
+    invalidateSettingsCache()
+    return NextResponse.json({ saved: true })
+  }
+
   // Save X OAuth credentials if provided
   const { xOAuthClientId, xOAuthClientSecret } = body
   const xKeys: { key: string; value: string | undefined }[] = [
@@ -201,7 +249,15 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const allowed = ['anthropicApiKey', 'openaiApiKey', 'x_oauth_client_id', 'x_oauth_client_secret']
+  const allowed = [
+    'anthropicApiKey',
+    'openaiApiKey',
+    'openrouterApiKey',
+    'geminiApiKey',
+    'opencodeApiKey',
+    'x_oauth_client_id',
+    'x_oauth_client_secret',
+  ]
   if (!body.key || !allowed.includes(body.key)) {
     return NextResponse.json({ error: 'Invalid key' }, { status: 400 })
   }

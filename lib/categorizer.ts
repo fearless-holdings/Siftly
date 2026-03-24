@@ -2,8 +2,7 @@ import prisma from '@/lib/db'
 import { buildImageContext } from '@/lib/image-context'
 import { getCliAvailability, claudePrompt, modelNameToCliAlias } from '@/lib/claude-cli-auth'
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
-import { getActiveModel, getProvider } from '@/lib/settings'
-import { AIClient, resolveAIClient } from '@/lib/ai-client'
+import { executeWithBackendFallback, ResolvedAiBackend, resolveAiBackend } from '@/lib/ai-backend'
 
 const BATCH_SIZE = 20
 
@@ -292,18 +291,18 @@ function parseCategorizationResponse(text: string, validSlugs: Set<string>): Cat
 
 export async function categorizeBatch(
   bookmarks: BookmarkForCategorization[],
-  client: AIClient | null,
+  resolved: ResolvedAiBackend,
   categoryDescriptions: Record<string, string> = {},
   allSlugs: string[] = DEFAULT_SLUGS,
 ): Promise<CategorizationResult[]> {
   if (bookmarks.length === 0) return []
 
   const prompt = buildCategorizationPrompt(bookmarks, categoryDescriptions, allSlugs)
-  const provider = await getProvider()
 
   // Prefer CLI over SDK (avoids OAuth token extraction, uses CLI directly)
-  if (provider === 'openai') {
-    if (await getCodexCliAvailability()) {
+  if (resolved.capabilities.cliPrompt === 'codex') {
+    const codexAvail = await getCodexCliAvailability()
+    if (codexAvail) {
       const result = await codexPrompt(prompt, { timeoutMs: 60_000 })
       if (result.success && result.data) {
         try {
@@ -315,10 +314,10 @@ export async function categorizeBatch(
         console.warn('[categorize] Codex CLI failed, falling back to SDK:', result.error)
       }
     }
-  } else {
-    if (await getCliAvailability()) {
-      const model = await getActiveModel()
-      const cliModel = modelNameToCliAlias(model)
+  } else if (resolved.capabilities.cliPrompt === 'claude') {
+    const claudeAvail = await getCliAvailability()
+    if (claudeAvail) {
+      const cliModel = modelNameToCliAlias(resolved.model)
 
       const result = await claudePrompt(prompt, { model: cliModel, timeoutMs: 60_000 })
       if (result.success && result.data) {
@@ -334,15 +333,17 @@ export async function categorizeBatch(
   }
 
   // Fallback to SDK (requires API key)
-  if (!client) {
-    throw new Error('No CLI available and no API key configured.')
+  if (!resolved.client) {
+    throw new Error(`No API client available for backend "${resolved.backend}" and no usable CLI path.`)
   }
 
-  const model = await getActiveModel()
-  const response = await client.createMessage({
-    model,
-    max_tokens: 2048,
-    messages: [{ role: 'user', content: prompt }],
+  const response = await executeWithBackendFallback(resolved, async (ctx) => {
+    if (!ctx.client) throw new Error(`Backend "${ctx.backend}" has no API client`)
+    return ctx.client.createMessage({
+      model: ctx.model,
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: prompt }],
+    })
   })
 
   if (!response.text) throw new Error('No text content in AI response')
@@ -466,7 +467,7 @@ export async function writeCategoryResults(results: CategorizationResult[]): Pro
 
   // Reconcile proposals first (before processing assignments)
   const allProposals = results.flatMap((r) => r.proposals ?? [])
-  const newCategories = await reconcileProposals(allProposals)
+  await reconcileProposals(allProposals)
 
   const tweetIds = results.map((r) => r.tweetId).filter(Boolean)
   if (tweetIds.length === 0) return
@@ -572,16 +573,8 @@ export async function categorizeAll(
 ): Promise<void> {
   await seedDefaultCategories()
 
-  // Resolve auth once — avoids re-resolving inside every batch call
-  const provider = await getProvider()
-  const keyName = provider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey'
-  const apiKeySetting = await prisma.setting.findUnique({ where: { key: keyName } })
-  let client: AIClient | null = null
-  try {
-    client = await resolveAIClient({ dbKey: apiKeySetting?.value })
-  } catch {
-    // CLI might still work — client stays null
-  }
+  // Resolve backend once — avoids recomputing provider/model/client per batch.
+  const resolved = await resolveAiBackend()
 
   // Load ALL categories (default + custom) for the prompt
   const dbCategories = await prisma.category.findMany({ select: { slug: true, name: true, description: true } })
@@ -613,7 +606,7 @@ export async function categorizeAll(
       })
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
+        const results = await categorizeBatch(batch, resolved, categoryDescriptions, allSlugs)
         await writeCategoryResults(results)
       } catch (err) {
         console.error(`Error categorizing batch at index ${i}:`, err)
@@ -641,7 +634,7 @@ export async function categorizeAll(
 
       const batch = rows.map(mapBookmarkForCategorization)
       try {
-        const results = await categorizeBatch(batch, client, categoryDescriptions, allSlugs)
+        const results = await categorizeBatch(batch, resolved, categoryDescriptions, allSlugs)
         await writeCategoryResults(results)
       } catch (err) {
         console.error('Error categorizing batch:', err)

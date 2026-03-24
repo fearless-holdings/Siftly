@@ -1,5 +1,6 @@
 import { expandQuery, invalidateExpansionCache } from './lib/search-expansion'
 import { fuseResults, rankBookmarksByScore } from './lib/search-fusion'
+import { ResolvedAiBackend } from './lib/ai-backend'
 
 // Verify all exports exist and are callable
 console.log('✓ Exported functions from search-expansion:')
@@ -11,7 +12,26 @@ console.log('  - fuseResults()', typeof fuseResults)
 console.log('  - rankBookmarksByScore()', typeof rankBookmarksByScore)
 
 // Verify return types
-const variants = await expandQuery('test', 'test-model', 'anthropic', null)
+const mockResolved: ResolvedAiBackend = {
+  backend: 'anthropic',
+  model: 'claude-haiku-4-5-20251001',
+  client: null,
+  capabilities: {
+    textGeneration: true,
+    inlineImages: true,
+    urlOnlyVisionFallback: true,
+    cliPrompt: 'claude',
+    healthCheckMethod: 'sdk_ping',
+    modelSource: 'fixed_default',
+    supportsExecutionFallback: true,
+    unattendedToolExecution: false,
+  },
+  resolutionSource: 'autodetect',
+  fallbackTrail: ['anthropic'],
+  errorTrail: [],
+}
+
+const variants = await expandQuery('test', mockResolved)
 console.log('\n✓ expandQuery() returns QueryVariants:')
 console.log('  - original:', typeof variants.original)
 console.log('  - reduced:', typeof variants.reduced)

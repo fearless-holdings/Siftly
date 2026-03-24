@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
 import { analyzeBatch } from '@/lib/vision-analyzer'
-import { AIClient, resolveAIClient } from '@/lib/ai-client'
-import { getProvider } from '@/lib/settings'
+import { resolveAiBackend } from '@/lib/ai-backend'
 
 // GET: returns progress stats
 export async function GET(): Promise<NextResponse> {
@@ -23,22 +22,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // use default
   }
 
-  const provider = await getProvider()
-  const keyName = provider === 'openai' ? 'openaiApiKey' : 'anthropicApiKey'
-  const setting = await prisma.setting.findUnique({ where: { key: keyName } })
-  const dbKey = setting?.value?.trim()
-
-  let client: AIClient | null = null
+  let resolved: Awaited<ReturnType<typeof resolveAiBackend>>
   try {
-    client = await resolveAIClient({ dbKey })
-  } catch {
-    // SDK not available — will use CLI path for vision
+    resolved = await resolveAiBackend()
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'No AI backend available' },
+      { status: 400 },
+    )
   }
-
-  return runAnalysis(client, batchSize)
+  return runAnalysis(resolved, batchSize)
 }
 
-async function runAnalysis(client: AIClient | null, batchSize: number): Promise<NextResponse> {
+async function runAnalysis(
+  resolved: Awaited<ReturnType<typeof resolveAiBackend>>,
+  batchSize: number,
+): Promise<NextResponse> {
   const untagged = await prisma.mediaItem.findMany({
     where: { imageTags: null, type: { in: ['photo', 'gif'] } },
     take: batchSize,
@@ -49,7 +48,7 @@ async function runAnalysis(client: AIClient | null, batchSize: number): Promise<
     return NextResponse.json({ analyzed: 0, remaining: 0, message: 'All images already analyzed.' })
   }
 
-  const analyzed = await analyzeBatch(untagged, client)
+  const analyzed = await analyzeBatch(untagged, resolved)
 
   const remaining = await prisma.mediaItem.count({
     where: { imageTags: null, type: { in: ['photo', 'gif'] } },

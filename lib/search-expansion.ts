@@ -3,8 +3,8 @@
  * for improved search coverage without changing the original user intent.
  */
 
-import { AIClient } from '@/lib/ai-client'
-import { getCliOAuthToken, createCliAnthropicClient, claudePrompt, modelNameToCliAlias, getCliAvailability } from '@/lib/claude-cli-auth'
+import { executeWithBackendFallback, ResolvedAiBackend } from '@/lib/ai-backend'
+import { claudePrompt, modelNameToCliAlias, getCliAvailability } from '@/lib/claude-cli-auth'
 import { getCodexCliAvailability, codexPrompt } from '@/lib/codex-cli'
 
 export interface QueryVariants {
@@ -14,8 +14,13 @@ export interface QueryVariants {
   all: string[]
 }
 
+interface QueryCacheEntry {
+  variants: QueryVariants
+  expiresAt: number
+}
+
 // Module-level expansion cache (1 hour TTL)
-let _expansionCache: Map<string, QueryVariants> = new Map()
+const _expansionCache: Map<string, QueryCacheEntry> = new Map()
 let _cacheCleanup = 0
 const CACHE_TTL_MS = 60 * 60 * 1000
 
@@ -24,7 +29,7 @@ function cleanExpiredCache(): void {
   if (now - _cacheCleanup < 5 * 60 * 1000) return // Clean every 5 minutes
 
   for (const [key, value] of Array.from(_expansionCache.entries())) {
-    if ((value as any)._expiresAt && now > (value as any)._expiresAt) {
+    if (now > value.expiresAt) {
       _expansionCache.delete(key)
     }
   }
@@ -33,12 +38,15 @@ function cleanExpiredCache(): void {
 
 function getCachedExpansion(query: string): QueryVariants | null {
   cleanExpiredCache()
-  return _expansionCache.get(query) || null
+  const entry = _expansionCache.get(query)
+  return entry?.variants ?? null
 }
 
 function setCachedExpansion(query: string, variants: QueryVariants): void {
-  ;(variants as any)._expiresAt = Date.now() + CACHE_TTL_MS
-  _expansionCache.set(query, variants)
+  _expansionCache.set(query, {
+    variants,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  })
 }
 
 /**
@@ -66,9 +74,7 @@ function reduceQuery(query: string): string {
  */
 async function generateParaphrase(
   query: string,
-  model: string,
-  provider: 'anthropic' | 'openai',
-  client: AIClient | null,
+  resolved: ResolvedAiBackend,
 ): Promise<string> {
   const prompt = `Rewrite this search query as a short, natural question (10 words max). Use different phrasing but keep the intent:
 
@@ -78,7 +84,7 @@ Response (just the rephrased question, no quotes):`
 
   try {
     // Try CLI first if available
-    if (provider === 'openai' && (await getCodexCliAvailability())) {
+    if (resolved.capabilities.cliPrompt === 'codex' && (await getCodexCliAvailability())) {
       try {
         const result = await codexPrompt(prompt, { timeoutMs: 15_000 })
         if (result.success && result.data?.trim()) {
@@ -87,9 +93,9 @@ Response (just the rephrased question, no quotes):`
       } catch { /* fall through */ }
     }
 
-    if (provider === 'anthropic' && (await getCliAvailability())) {
+    if (resolved.capabilities.cliPrompt === 'claude' && (await getCliAvailability())) {
       try {
-        const cliModel = modelNameToCliAlias(model)
+        const cliModel = modelNameToCliAlias(resolved.model)
         const result = await claudePrompt(prompt, { model: cliModel, timeoutMs: 15_000 })
         if (result.success && result.data?.trim()) {
           return result.data.trim().slice(0, 150)
@@ -98,11 +104,14 @@ Response (just the rephrased question, no quotes):`
     }
 
     // Fall back to SDK if available
-    if (client) {
-      const response = await client.createMessage({
-        model,
-        max_tokens: 50,
-        messages: [{ role: 'user', content: prompt }],
+    if (resolved.client) {
+      const response = await executeWithBackendFallback(resolved, async (ctx) => {
+        if (!ctx.client) throw new Error(`No AI client available for backend "${ctx.backend}"`)
+        return ctx.client.createMessage({
+          model: ctx.model,
+          max_tokens: 50,
+          messages: [{ role: 'user', content: prompt }],
+        })
       })
       const text = response.text?.trim() ?? ''
       if (text) return text.slice(0, 150)
@@ -118,16 +127,14 @@ Response (just the rephrased question, no quotes):`
  */
 export async function expandQuery(
   query: string,
-  model: string,
-  provider: 'anthropic' | 'openai',
-  client: AIClient | null,
+  resolved: ResolvedAiBackend,
 ): Promise<QueryVariants> {
   const cached = getCachedExpansion(query)
   if (cached) return cached
 
   const original = query.trim()
   const reduced = reduceQuery(original)
-  const paraphrase = await generateParaphrase(original, model, provider, client)
+  const paraphrase = await generateParaphrase(original, resolved)
 
   const variants: QueryVariants = {
     original,

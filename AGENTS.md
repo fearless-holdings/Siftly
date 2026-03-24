@@ -18,16 +18,29 @@ npx next dev
 
 App runs at **http://localhost:3000**
 
-## AI Authentication — No API Key Needed
+## AI Backends
 
-If the user is signed into Claude Code CLI, **Siftly uses their Claude subscription automatically**. No API key configuration required.
+Siftly now resolves a request-scoped backend context (`ResolvedAiBackend`) once per request and passes it through categorization, vision, enrichment, and AI search.
 
-How it works:
-- `lib/claude-cli-auth.ts` reads the OAuth token from the macOS keychain (`Claude Code-credentials`)
-- Uses `authToken` + `anthropic-beta: oauth-2025-04-20` header in the Anthropic SDK
-- Falls back to: DB-saved API key → `ANTHROPIC_API_KEY` env var → local proxy
+Supported backends:
+- `anthropic` (Claude API + Claude CLI path)
+- `openai` (OpenAI API + Codex CLI path)
+- `openrouter` (OpenAI-compatible)
+- `gemini` (Gemini API adapter)
+- `opencode` (Zen/Go endpoint adapter)
+- `acp_cursor`, `acp_amp` (ACP adapters, gated behind `SIFTLY_EXPERIMENTAL_ACP=1`)
 
-To verify it's working, hit: `GET /api/settings/cli-status`
+Resolution order:
+1. `SIFTLY_AI_BACKEND` (if set)
+2. Saved UI provider (`anthropic` / `openai`)
+3. Auto-detect (Claude CLI, then Codex CLI, else Anthropic default)
+4. Optional `SIFTLY_AI_FALLBACK` chain
+
+Runtime retry/failover can be configured separately with `SIFTLY_AI_EXECUTION_FALLBACK`.
+
+Antigravity OAuth is intentionally not enabled by default in this codebase; treat it as an optional, experimental Phase 2 integration.
+
+To inspect active resolution details, hit: `GET /api/settings/cli-status` and `GET /api/settings`.
 
 ## Key Commands
 
