@@ -15,11 +15,11 @@ const ALLOWED_ANTHROPIC_MODELS = [
 ] as const
 
 const ALLOWED_OPENAI_MODELS = [
-  'gpt-4.1-mini',
-  'gpt-4.1',
-  'gpt-4.1-nano',
-  'o4-mini',
-  'o3',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'gpt-5.4-pro',
+  'gpt-5.2',
 ] as const
 
 export async function GET(): Promise<NextResponse> {
@@ -44,7 +44,7 @@ export async function GET(): Promise<NextResponse> {
       anthropicModel: anthropicModel?.value ?? 'claude-haiku-4-5-20251001',
       openaiApiKey: maskKey(openai?.value ?? null),
       hasOpenaiKey: openai !== null,
-      openaiModel: openaiModel?.value ?? 'gpt-4.1-mini',
+      openaiModel: openaiModel?.value ?? 'gpt-5.4-mini',
       xOAuthClientId: maskKey(xClientId?.value ?? null),
       xOAuthClientSecret: maskKey(xClientSecret?.value ?? null),
       hasXOAuth: !!xClientId?.value,

@@ -29,11 +29,11 @@ const ANTHROPIC_MODELS = [
 ]
 
 const OPENAI_MODELS = [
-  { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini', description: 'Fast & Cheap' },
-  { value: 'gpt-4.1', label: 'GPT-4.1', description: 'Most Capable' },
-  { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano', description: 'Fastest' },
-  { value: 'o4-mini', label: 'o4-mini', description: 'Reasoning (mini)' },
-  { value: 'o3', label: 'o3', description: 'Reasoning' },
+  { value: 'gpt-5.4-nano', label: 'GPT-5.4 Nano', description: 'Fastest & Cheapest' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', description: 'Fast & Capable' },
+  { value: 'gpt-5.4', label: 'GPT-5.4', description: 'Most Capable (Recommended)' },
+  { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro', description: 'Maximum Performance' },
+  { value: 'gpt-5.2', label: 'GPT-5.2', description: 'Legacy (Will be retired)' },
 ]
 
 
@@ -615,7 +615,7 @@ function ApiKeySection({ onToast }: { onToast: (t: Toast) => void }) {
               <ModelSelector
                 models={OPENAI_MODELS}
                 settingKey="openaiModel"
-                defaultValue="gpt-4.1-mini"
+                defaultValue="gpt-5.4-mini"
                 onToast={onToast}
               />
               <p className="text-xs text-zinc-500 mt-1.5">Applies to all AI operations — API key <strong className="text-zinc-400 font-medium">and Codex CLI</strong></p>

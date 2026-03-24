@@ -91,7 +91,7 @@ export async function getProvider(): Promise<'anthropic' | 'openai'> {
 export async function getOpenAIModel(): Promise<string> {
   if (_cachedOpenAIModel && Date.now() < _openAIModelCacheExpiry) return _cachedOpenAIModel
   const setting = await prisma.setting.findUnique({ where: { key: 'openaiModel' } })
-  _cachedOpenAIModel = setting?.value ?? 'gpt-4.1-mini'
+  _cachedOpenAIModel = setting?.value ?? 'gpt-5.4-mini'
   _openAIModelCacheExpiry = Date.now() + CACHE_TTL
   return _cachedOpenAIModel
 }
