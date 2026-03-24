@@ -17,6 +17,7 @@ import {
 } from '@/lib/vision-analyzer'
 import { backfillEntities } from '@/lib/rawjson-extractor'
 import { rebuildFts } from '@/lib/fts'
+import { regeneratePassages } from '@/lib/passages'
 
 type Stage = 'vision' | 'entities' | 'enrichment' | 'categorize' | 'parallel'
 
@@ -151,6 +152,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   void (async () => {
     const counts = { visionTagged: 0, entitiesExtracted: 0, enriched: 0, categorized: 0 }
+    let bookmarkIdsToProcess: string[] = []
 
     try {
       let client: AIClient | null = null
@@ -184,7 +186,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         // Stage 2: Parallel pipeline — vision + enrichment + categorize per bookmark
         if (!shouldAbort()) {
           // Fetch all bookmark IDs to process
-          let bookmarkIdsToProcess: string[]
           if (bookmarkIds.length > 0) {
             bookmarkIdsToProcess = bookmarkIds
           } else if (force) {
@@ -365,6 +366,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     if (!shouldAbort()) {
+      // Regenerate passages for all processed bookmarks (needed for search)
+      const processedIds = bookmarkIdsToProcess
+      if (processedIds.length > 0) {
+        await regeneratePassages(processedIds).catch((err) => console.error('Passage regen error:', err))
+      }
       await rebuildFts().catch((err) => console.error('FTS rebuild error:', err))
     }
   })()

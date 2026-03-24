@@ -8,11 +8,12 @@
 
 import prisma from '@/lib/db'
 
-const FTS_TABLE = 'bookmark_fts'
+const FTS_BOOKMARKS = 'bookmark_fts'
+const FTS_PASSAGES = 'passage_fts'
 
 export async function ensureFtsTable(): Promise<void> {
   await prisma.$executeRawUnsafe(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_TABLE} USING fts5(
+    CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_BOOKMARKS} USING fts5(
       bookmark_id UNINDEXED,
       text,
       semantic_tags,
@@ -21,15 +22,25 @@ export async function ensureFtsTable(): Promise<void> {
       tokenize='porter unicode61'
     )
   `)
+  await prisma.$executeRawUnsafe(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_PASSAGES} USING fts5(
+      passage_id UNINDEXED,
+      bookmark_id UNINDEXED,
+      passage_type UNINDEXED,
+      content,
+      tokenize='porter unicode61'
+    )
+  `)
 }
 
 /**
- * Rebuild the FTS5 table from all bookmarks. Fast (local SQLite) and idempotent.
+ * Rebuild the FTS5 tables from all bookmarks and passages. Fast (local SQLite) and idempotent.
  * Call after import or enrichment runs.
  */
 export async function rebuildFts(): Promise<void> {
   await ensureFtsTable()
-  await prisma.$executeRawUnsafe(`DELETE FROM ${FTS_TABLE}`)
+  await prisma.$executeRawUnsafe(`DELETE FROM ${FTS_BOOKMARKS}`)
+  await prisma.$executeRawUnsafe(`DELETE FROM ${FTS_PASSAGES}`)
 
   const bookmarks = await prisma.bookmark.findMany({
     select: {
@@ -54,44 +65,101 @@ export async function rebuildFts(): Promise<void> {
           .filter(Boolean)
           .join(' ')
         return prisma.$executeRaw`
-          INSERT INTO bookmark_fts(bookmark_id, text, semantic_tags, entities, image_tags)
+          INSERT INTO ${FTS_BOOKMARKS}(bookmark_id, text, semantic_tags, entities, image_tags)
           VALUES (${b.id}, ${b.text}, ${b.semanticTags ?? ''}, ${b.entities ?? ''}, ${imageTagsText})
         `
       }),
     )
   }
+
+  // Also rebuild passage FTS
+  const passages = await prisma.passage.findMany({
+    select: { id: true, bookmarkId: true, passageType: true, content: true },
+  })
+
+  if (passages.length > 0) {
+    for (let i = 0; i < passages.length; i += BATCH) {
+      const batch = passages.slice(i, i + BATCH)
+      await prisma.$transaction(
+        batch.map((p) =>
+          prisma.$executeRaw`
+            INSERT INTO ${FTS_PASSAGES}(passage_id, bookmark_id, passage_type, content)
+            VALUES (${p.id}, ${p.bookmarkId}, ${p.passageType}, ${p.content})
+          `
+        ),
+      )
+    }
+  }
 }
 
 /**
- * Search FTS5 table for bookmarks matching the given keywords.
+ * Search FTS5 bookmarks table for matching keywords.
  * Returns bookmark IDs ordered by relevance rank.
- * Returns [] on error (caller should fall back to LIKE queries).
  */
-export async function ftsSearch(keywords: string[]): Promise<string[]> {
+export async function ftsSearchBookmarks(keywords: string[]): Promise<string[]> {
   if (keywords.length === 0) return []
 
   try {
     await ensureFtsTable()
 
-    // Sanitize each keyword: remove FTS5 special chars, wrap in quotes for phrase safety
     const terms = keywords
       .map((kw) => kw.replace(/["*()]/g, ' ').trim())
       .filter((kw) => kw.length >= 2)
 
     if (terms.length === 0) return []
 
-    // Build FTS5 MATCH query with OR between terms
     const matchQuery = terms.join(' OR ')
 
     const results = await prisma.$queryRaw<{ bookmark_id: string }[]>`
-      SELECT bookmark_id FROM bookmark_fts
-      WHERE bookmark_fts MATCH ${matchQuery}
+      SELECT bookmark_id FROM ${FTS_BOOKMARKS}
+      WHERE ${FTS_BOOKMARKS} MATCH ${matchQuery}
       ORDER BY rank
       LIMIT 150
     `
     return results.map((r) => r.bookmark_id)
   } catch {
-    // FTS table may not be populated yet or query has syntax error — fall back gracefully
     return []
   }
+}
+
+/**
+ * Search FTS5 passages table for matching keywords.
+ * Returns { passageId, bookmarkId } ordered by relevance.
+ */
+export async function ftsSearchPassages(keywords: string[]): Promise<{ passageId: string; bookmarkId: string }[]> {
+  if (keywords.length === 0) return []
+
+  try {
+    await ensureFtsTable()
+
+    const terms = keywords
+      .map((kw) => kw.replace(/["*()]/g, ' ').trim())
+      .filter((kw) => kw.length >= 2)
+
+    if (terms.length === 0) return []
+
+    const matchQuery = terms.join(' OR ')
+
+    const results = await prisma.$queryRaw<{ passage_id: string; bookmark_id: string }[]>`
+      SELECT passage_id, bookmark_id FROM ${FTS_PASSAGES}
+      WHERE ${FTS_PASSAGES} MATCH ${matchQuery}
+      ORDER BY rank
+      LIMIT 150
+    `
+    return results.map((r) => ({ passageId: r.passage_id, bookmarkId: r.bookmark_id }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Legacy search function (for backward compat).
+ * Uses both bookmarks and passages, returns unique bookmark IDs.
+ */
+export async function ftsSearch(keywords: string[]): Promise<string[]> {
+  const bookmarkIds = await ftsSearchBookmarks(keywords)
+  const passageResults = await ftsSearchPassages(keywords)
+  const fromPassages = [...new Set(passageResults.map((p) => p.bookmarkId))]
+  const merged = [...new Set([...bookmarkIds, ...fromPassages])]
+  return merged.slice(0, 150)
 }

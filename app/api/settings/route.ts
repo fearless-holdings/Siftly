@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
-import { invalidateSettingsCache } from '@/lib/settings'
+import { invalidateSettingsCache, getProvider, getSavedProvider } from '@/lib/settings'
 
 function maskKey(raw: string | null): string | null {
   if (!raw) return null
@@ -24,18 +24,21 @@ const ALLOWED_OPENAI_MODELS = [
 
 export async function GET(): Promise<NextResponse> {
   try {
-    const [anthropic, anthropicModel, provider, openai, openaiModel, xClientId, xClientSecret] = await Promise.all([
+    const [anthropic, anthropicModel, savedProvider, openai, openaiModel, xClientId, xClientSecret, effectiveProvider] = await Promise.all([
       prisma.setting.findUnique({ where: { key: 'anthropicApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'anthropicModel' } }),
-      prisma.setting.findUnique({ where: { key: 'aiProvider' } }),
+      getSavedProvider(),
       prisma.setting.findUnique({ where: { key: 'openaiApiKey' } }),
       prisma.setting.findUnique({ where: { key: 'openaiModel' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_id' } }),
       prisma.setting.findUnique({ where: { key: 'x_oauth_client_secret' } }),
+      getProvider(),
     ])
 
     return NextResponse.json({
-      provider: provider?.value ?? 'anthropic',
+      provider: effectiveProvider,
+      savedProvider: savedProvider ?? null,
+      providerMode: savedProvider ? 'manual' : 'auto',
       anthropicApiKey: maskKey(anthropic?.value ?? null),
       hasAnthropicKey: anthropic !== null,
       anthropicModel: anthropicModel?.value ?? 'claude-haiku-4-5-20251001',

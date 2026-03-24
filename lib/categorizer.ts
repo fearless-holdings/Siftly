@@ -133,6 +133,14 @@ interface CategoryAssignment {
 interface CategorizationResult {
   tweetId: string
   assignments: CategoryAssignment[]
+  proposals?: CategoryProposal[]
+}
+
+interface CategoryProposal {
+  name: string
+  description: string
+  tweetIds: string[]
+  confidence: number
 }
 
 export async function seedDefaultCategories(): Promise<void> {
@@ -156,6 +164,7 @@ function buildCategorizationPrompt(
   bookmarks: BookmarkForCategorization[],
   categoryDescriptions: Record<string, string>,
   allSlugs: string[],
+  allowProposals = true,
 ): string {
   const categoriesList = allSlugs.map(
     (slug) => `- ${slug}: ${categoryDescriptions[slug] ?? slug.replace(/-/g, ' ')}`,
@@ -170,6 +179,47 @@ function buildCategorizationPrompt(
     if (b.tools?.length) entry.tools = b.tools.join(', ')
     return entry
   })
+
+  const proposalSection = allowProposals
+    ? `
+CATEGORY PROPOSALS (optional):
+If a bookmark clearly doesn't fit any existing category, you MAY suggest a new category:
+{
+  "proposals": [
+    {
+      "name": "Category Name",
+      "description": "Clear description of what belongs here",
+      "tweetIds": ["123", "456"],  // IDs of bookmarks fitting this new category
+      "confidence": 0.85  // How confident this is a useful new category
+    }
+  ]
+}
+
+Guidelines for proposals:
+- ONLY propose if 2+ bookmarks would benefit AND no existing category is a clean fit
+- Strongly prefer merging into existing categories — proposals are last resort
+- New categories should be durable, not one-off or overlapping
+- Keep proposals focused and cohesive
+`
+    : ''
+
+  const outputFormat = allowProposals
+    ? `Return valid JSON — no markdown, no explanation. Can include "proposals" field:
+[{
+  "tweetId": "123",
+  "assignments": [
+    {"category": "ai-resources", "confidence": 0.92}
+  ],
+  "proposals": [...]  // optional
+}]`
+    : `Return ONLY valid JSON — no markdown, no explanation:
+[{
+  "tweetId": "123",
+  "assignments": [
+    {"category": "ai-resources", "confidence": 0.92},
+    {"category": "dev-tools", "confidence": 0.71}
+  ]
+}]`
 
   return `You are an expert librarian categorizing Twitter/X bookmarks into a personal knowledge base. Your categorizations directly power search and discovery — accuracy is critical.
 
@@ -194,15 +244,9 @@ AVOID:
 - Over-assigning "general" — it's a catch-all, not a default
 - Conflating news about AI with AI resources (a news thread about OpenAI is "news", not "ai-resources")
 - Assigning categories based only on passing mentions (a dev tweet that mentions a price = dev-tools, not finance)
+${proposalSection}
 
-Return ONLY valid JSON — no markdown, no explanation:
-[{
-  "tweetId": "123",
-  "assignments": [
-    {"category": "ai-resources", "confidence": 0.92},
-    {"category": "dev-tools", "confidence": 0.71}
-  ]
-}]
+${outputFormat}
 
 BOOKMARKS:
 ${JSON.stringify(tweetData, null, 1)}`
@@ -226,7 +270,23 @@ function parseCategorizationResponse(text: string, validSlugs: Set<string>): Cat
       }))
       .filter((a) => validSlugs.has(a.category))
 
-    return { tweetId, assignments }
+    const proposals: CategoryProposal[] = []
+    const rawProposals = Array.isArray((item as Record<string, unknown>).proposals)
+      ? ((item as Record<string, unknown>).proposals as Record<string, unknown>[])
+      : []
+    for (const p of rawProposals) {
+      const proposal: CategoryProposal = {
+        name: String(p.name ?? ''),
+        description: String(p.description ?? ''),
+        tweetIds: Array.isArray(p.tweetIds) ? (p.tweetIds as string[]) : [],
+        confidence: typeof p.confidence === 'number' ? Math.min(1, Math.max(0.5, p.confidence)) : 0.7,
+      }
+      if (proposal.name && proposal.tweetIds.length >= 2) {
+        proposals.push(proposal)
+      }
+    }
+
+    return { tweetId, assignments, ...(proposals.length > 0 && { proposals }) }
   })
 }
 
@@ -290,8 +350,123 @@ export async function categorizeBatch(
   return parseCategorizationResponse(response.text, new Set(allSlugs))
 }
 
+/**
+ * Reconcile category proposals against existing categories.
+ * - Merges close semantic matches into existing categories
+ * - Creates truly novel ones with deterministic slug + color
+ * - Marks isAiGenerated=true, adds to results for reuse in later batches
+ */
+async function reconcileProposals(allProposals: CategoryProposal[]): Promise<{ slug: string }[]> {
+  if (allProposals.length === 0) return []
+
+  // Deduplicate proposals by name (case-insensitive)
+  const uniqueProposals = new Map<string, CategoryProposal>()
+  for (const p of allProposals) {
+    const key = p.name.toLowerCase()
+    if (!uniqueProposals.has(key) || p.confidence > (uniqueProposals.get(key)?.confidence ?? 0)) {
+      uniqueProposals.set(key, p)
+    }
+  }
+
+  // Fetch existing categories for comparison
+  const existing = await prisma.category.findMany({
+    select: { id: true, name: true, slug: true, description: true },
+  })
+  const existingBySlug = new Map(existing.map((c) => [c.slug, c]))
+  const existingByName = new Map(existing.map((c) => [c.name.toLowerCase(), c]))
+
+  const created: { slug: string }[] = []
+
+  for (const proposal of uniqueProposals.values()) {
+    const nameKey = proposal.name.toLowerCase()
+
+    // Check exact name match
+    if (existingByName.has(nameKey)) {
+      continue // Already exists, skip
+    }
+
+    // Check semantic similarity (simple substring match for now)
+    let merged = false
+    for (const existingCat of existing) {
+      const existingLower = existingCat.name.toLowerCase()
+      if (
+        existingLower.includes(nameKey) ||
+        nameKey.includes(existingLower) ||
+        (nameKey.length > 3 && existingLower.length > 3 && editDistance(nameKey, existingLower) <= 2)
+      ) {
+        merged = true
+        break
+      }
+    }
+    if (merged) continue
+
+    // Novel category — create with deterministic slug + color
+    const slug = proposal.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 50)
+
+    // Check if slug exists
+    if (existingBySlug.has(slug)) {
+      continue
+    }
+
+    // Deterministic color from hash
+    const hash = slug.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+    const colors = [
+      '#6366f1', '#f59e0b', '#06b6d4', '#10b981', '#f97316',
+      '#ec4899', '#14b8a6', '#ef4444', '#3b82f6', '#a855f7',
+    ]
+    const color = colors[Math.abs(hash) % colors.length]
+
+    await prisma.category.create({
+      data: {
+        name: proposal.name,
+        slug,
+        color,
+        description: proposal.description || undefined,
+        isAiGenerated: true,
+      },
+    })
+
+    created.push({ slug })
+    existingBySlug.set(slug, {
+      id: 'new',
+      name: proposal.name,
+      slug,
+      description: proposal.description || null,
+    })
+  }
+
+  return created
+}
+
+/** Levenshtein distance for semantic similarity */
+function editDistance(a: string, b: string): number {
+  const dp: number[] = []
+  for (let i = 0; i <= b.length; i++) dp[i] = i
+  for (let i = 1; i <= a.length; i++) {
+    let prev = i
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j]
+      dp[j] = Math.min(
+        dp[j] + 1,
+        dp[j - 1] + 1,
+        prev + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+      prev = tmp
+    }
+  }
+  return dp[b.length]
+}
+
 export async function writeCategoryResults(results: CategorizationResult[]): Promise<void> {
   if (results.length === 0) return
+
+  // Reconcile proposals first (before processing assignments)
+  const allProposals = results.flatMap((r) => r.proposals ?? [])
+  const newCategories = await reconcileProposals(allProposals)
 
   const tweetIds = results.map((r) => r.tweetId).filter(Boolean)
   if (tweetIds.length === 0) return

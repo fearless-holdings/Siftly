@@ -104,6 +104,9 @@ export function getCodexCliAuthStatus(): {
   return { available: true, authMode: auth.auth_mode, planType }
 }
 
+// Re-export from codex-cli for convenience
+export { getCodexCliAvailability } from './codex-cli'
+
 function createCodexOpenAIClient(baseURL?: string): OpenAI | null {
   const apiKey = getCodexApiKey()
   if (!apiKey) return null

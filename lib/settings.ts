@@ -1,11 +1,16 @@
 import prisma from '@/lib/db'
+import { getCliAuthStatus, getCliAvailability } from '@/lib/claude-cli-auth'
+import { getCodexCliAuthStatus, getCodexCliAvailability } from '@/lib/openai-auth'
 
 // Module-level caches — avoids hundreds of DB roundtrips per pipeline run
 let _cachedModel: string | null = null
 let _modelCacheExpiry = 0
 
-let _cachedProvider: 'anthropic' | 'openai' | null = null
-let _providerCacheExpiry = 0
+let _cachedSavedProvider: 'anthropic' | 'openai' | null | undefined = undefined
+let _savedProviderCacheExpiry = 0
+
+let _cachedEffectiveProvider: 'anthropic' | 'openai' | null = null
+let _effectiveProviderCacheExpiry = 0
 
 let _cachedOpenAIModel: string | null = null
 let _openAIModelCacheExpiry = 0
@@ -24,14 +29,60 @@ export async function getAnthropicModel(): Promise<string> {
 }
 
 /**
- * Get the active AI provider (cached for 5 minutes).
+ * Get the manually-saved AI provider preference, or null if not set.
+ */
+export async function getSavedProvider(): Promise<'anthropic' | 'openai' | null> {
+  if (_cachedSavedProvider !== undefined && Date.now() < _savedProviderCacheExpiry) {
+    return _cachedSavedProvider
+  }
+  const setting = await prisma.setting.findUnique({ where: { key: 'aiProvider' } })
+  _cachedSavedProvider = setting?.value === 'openai' ? 'openai' : (setting?.value === 'anthropic' ? 'anthropic' : null)
+  _savedProviderCacheExpiry = Date.now() + CACHE_TTL
+  return _cachedSavedProvider
+}
+
+/**
+ * Get the effective AI provider using autodetection:
+ * 1. If aiProvider is explicitly saved, use it
+ * 2. Otherwise prefer Anthropic if Claude CLI auth is available
+ * 3. Otherwise use OpenAI if Codex/OpenAI auth is available
+ * 4. Default to Anthropic as fallback
+ * 
+ * Cached for 5 minutes to avoid repeated auth checks.
  */
 export async function getProvider(): Promise<'anthropic' | 'openai'> {
-  if (_cachedProvider && Date.now() < _providerCacheExpiry) return _cachedProvider
-  const setting = await prisma.setting.findUnique({ where: { key: 'aiProvider' } })
-  _cachedProvider = setting?.value === 'openai' ? 'openai' : 'anthropic'
-  _providerCacheExpiry = Date.now() + CACHE_TTL
-  return _cachedProvider
+  if (_cachedEffectiveProvider && Date.now() < _effectiveProviderCacheExpiry) {
+    return _cachedEffectiveProvider
+  }
+
+  const saved = await getSavedProvider()
+  if (saved) {
+    _cachedEffectiveProvider = saved
+    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
+    return _cachedEffectiveProvider
+  }
+
+  // No manual override — autodetect
+  // Prefer Anthropic if Claude CLI is available
+  const claudeStatus = getCliAuthStatus()
+  if (claudeStatus.available && !claudeStatus.expired) {
+    _cachedEffectiveProvider = 'anthropic'
+    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
+    return _cachedEffectiveProvider
+  }
+
+  // Otherwise try Codex/OpenAI
+  const codexStatus = getCodexCliAuthStatus()
+  if (codexStatus.available && !codexStatus.expired && await getCodexCliAvailability()) {
+    _cachedEffectiveProvider = 'openai'
+    _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
+    return _cachedEffectiveProvider
+  }
+
+  // Default to Anthropic as fallback
+  _cachedEffectiveProvider = 'anthropic'
+  _effectiveProviderCacheExpiry = Date.now() + CACHE_TTL
+  return _cachedEffectiveProvider
 }
 
 /**
@@ -59,8 +110,10 @@ export async function getActiveModel(): Promise<string> {
 export function invalidateSettingsCache(): void {
   _cachedModel = null
   _modelCacheExpiry = 0
-  _cachedProvider = null
-  _providerCacheExpiry = 0
+  _cachedSavedProvider = undefined
+  _savedProviderCacheExpiry = 0
+  _cachedEffectiveProvider = null
+  _effectiveProviderCacheExpiry = 0
   _cachedOpenAIModel = null
   _openAIModelCacheExpiry = 0
 }

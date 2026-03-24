@@ -1,136 +1,108 @@
+/**
+ * Phase 5: Agent-oriented bookmark retrieval endpoints.
+ * GET - fetch single bookmark by id or tweetId
+ * POST - batch retrieve multiple bookmarks
+ */
+
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/db'
+import { buildBookmarkResponse } from '@/lib/search-pipeline'
 
-const DEFAULT_PAGE = 1
-const DEFAULT_LIMIT = 24
-const MAX_LIMIT = 100
+const BOOKMARK_SELECT = {
+  id: true,
+  tweetId: true,
+  text: true,
+  authorHandle: true,
+  authorName: true,
+  tweetCreatedAt: true,
+  importedAt: true,
+  enrichedAt: true,
+  semanticTags: true,
+  entities: true,
+  enrichmentMeta: true,
+  mediaItems: { select: { id: true, type: true, url: true, thumbnailUrl: true, imageTags: true } },
+  categories: {
+    include: { category: { select: { id: true, name: true, slug: true, color: true } } },
+    orderBy: { confidence: 'desc' as const },
+  },
+} as const
 
-function parseIntParam(value: string | null, defaultValue: number): number {
-  if (!value) return defaultValue
-  const parsed = parseInt(value, 10)
-  return isNaN(parsed) || parsed < 1 ? defaultValue : parsed
-}
-
-export async function DELETE(): Promise<NextResponse> {
-  try {
-    // Delete media items and category links first (cascade), then bookmarks
-    await prisma.$transaction([
-      prisma.bookmarkCategory.deleteMany({}),
-      prisma.mediaItem.deleteMany({}),
-      prisma.bookmark.deleteMany({}),
-      prisma.category.deleteMany({}),
-    ])
-    return NextResponse.json({ success: true })
-  } catch (err) {
-    console.error('Clear bookmarks error:', err)
-    return NextResponse.json(
-      { error: `Failed to clear bookmarks: ${err instanceof Error ? err.message : String(err)}` },
-      { status: 500 }
-    )
-  }
-}
-
+/**
+ * GET /api/bookmarks?id=<id>&tweetId=<tweetId>
+ * Fetch a single bookmark by its ID or tweetId.
+ */
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  const { searchParams } = new URL(request.url)
+  const id = request.nextUrl.searchParams.get('id')
+  const tweetId = request.nextUrl.searchParams.get('tweetId')
 
-  const q = searchParams.get('q')?.trim() ?? ''
-  const source = searchParams.get('source')?.trim() ?? ''
-  const categorySlug = searchParams.get('category')?.trim() ?? ''
-  const mediaType = searchParams.get('mediaType')?.trim() ?? ''
-  const uncategorized = searchParams.get('uncategorized') === 'true'
-  const sortParam = searchParams.get('sort')?.trim() ?? 'newest'
-  const page = parseIntParam(searchParams.get('page'), DEFAULT_PAGE)
-  const limit = Math.min(parseIntParam(searchParams.get('limit'), DEFAULT_LIMIT), MAX_LIMIT)
-  const skip = (page - 1) * limit
-  const orderDir = sortParam === 'oldest' ? 'asc' : 'desc'
-
-  const where: Record<string, unknown> = {}
-
-  if (source === 'bookmark' || source === 'like') {
-    where.source = source
-  }
-
-  if (q) {
-    where.text = { contains: q }
-  }
-
-  if (uncategorized) {
-    where.categories = { none: {} }
-  } else if (categorySlug) {
-    where.categories = {
-      some: {
-        category: { slug: categorySlug },
-      },
-    }
-  }
-
-  if (mediaType === 'photo' || mediaType === 'video') {
-    where.mediaItems = {
-      some: { type: mediaType },
-    }
+  if (!id && !tweetId) {
+    return NextResponse.json({ error: 'id or tweetId required' }, { status: 400 })
   }
 
   try {
-    const [bookmarks, total] = await Promise.all([
-      prisma.bookmark.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: [{ tweetCreatedAt: orderDir }, { importedAt: orderDir }],
-        include: {
-          mediaItems: true,
-          categories: {
-            include: {
-              category: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                  color: true,
-                },
-              },
-            },
-          },
-        },
-      }),
-      prisma.bookmark.count({ where }),
-    ])
+    const bookmark = await prisma.bookmark.findFirst({
+      where: id ? { id } : { tweetId: tweetId! },
+      select: BOOKMARK_SELECT,
+    })
 
-    const formatted = bookmarks.map((bookmark) => ({
-      id: bookmark.id,
-      tweetId: bookmark.tweetId,
-      text: bookmark.text,
-      authorHandle: bookmark.authorHandle,
-      authorName: bookmark.authorName,
-      source: bookmark.source,
-      tweetCreatedAt: bookmark.tweetCreatedAt?.toISOString() ?? null,
-      importedAt: bookmark.importedAt.toISOString(),
-      mediaItems: bookmark.mediaItems.map((m) => ({
-        id: m.id,
-        type: m.type,
-        url: m.url,
-        thumbnailUrl: m.thumbnailUrl,
-      })),
-      categories: bookmark.categories.map((bc) => ({
-        id: bc.category.id,
-        name: bc.category.name,
-        slug: bc.category.slug,
-        color: bc.category.color,
-        confidence: bc.confidence,
-      })),
-    }))
+    if (!bookmark) {
+      return NextResponse.json({ error: 'Bookmark not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ bookmark: buildBookmarkResponse(bookmark) })
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    console.error('Bookmark fetch error:', errMsg)
+    return NextResponse.json({ error: errMsg }, { status: 500 })
+  }
+}
+
+/**
+ * POST /api/bookmarks
+ * Batch fetch multiple bookmarks by IDs or tweetIds.
+ *
+ * Body: { ids?: string[], tweetIds?: string[] }
+ * Response: { bookmarks: [...], notFound: [...] }
+ */
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  let body: { ids?: string[]; tweetIds?: string[] } = {}
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+
+  const { ids = [], tweetIds = [] } = body
+  if (ids.length === 0 && tweetIds.length === 0) {
+    return NextResponse.json({ error: 'ids or tweetIds required' }, { status: 400 })
+  }
+
+  try {
+    const bookmarks = await prisma.bookmark.findMany({
+      where: {
+        OR: [
+          ...(ids.length > 0 ? [{ id: { in: ids } }] : []),
+          ...(tweetIds.length > 0 ? [{ tweetId: { in: tweetIds } }] : []),
+        ],
+      },
+      select: BOOKMARK_SELECT,
+    })
+
+    const foundIds = new Set(bookmarks.map((b) => b.id))
+    const foundTweetIds = new Set(bookmarks.map((b) => b.tweetId))
+    const notFound = [
+      ...ids.filter((id) => !foundIds.has(id)),
+      ...tweetIds.filter((tweetId) => !foundTweetIds.has(tweetId)),
+    ]
 
     return NextResponse.json({
-      bookmarks: formatted,
-      total,
-      page,
-      limit,
+      bookmarks: bookmarks.map(buildBookmarkResponse),
+      notFound,
+      count: bookmarks.length,
     })
   } catch (err) {
-    console.error('Bookmarks fetch error:', err)
-    return NextResponse.json(
-      { error: `Failed to fetch bookmarks: ${err instanceof Error ? err.message : String(err)}` },
-      { status: 500 }
-    )
+    const errMsg = err instanceof Error ? err.message : String(err)
+    console.error('Batch fetch error:', errMsg)
+    return NextResponse.json({ error: errMsg }, { status: 500 })
   }
 }

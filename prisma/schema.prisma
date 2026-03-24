@@ -23,6 +23,7 @@ model Bookmark {
   source          String    @default("bookmark")  // "bookmark" | "like"
   mediaItems    MediaItem[]
   categories    BookmarkCategory[]
+  passages      Passage[]
 
   @@index([authorHandle])
   @@index([tweetCreatedAt])
@@ -63,6 +64,19 @@ model MediaItem {
 
   @@index([bookmarkId])
   @@index([url])
+}
+
+model Passage {
+  id             String   @id @default(cuid())
+  bookmarkId     String
+  passageType    String   // "text" | "ocr" | "semantic" | "entities" | "category_context"
+  content        String   // snippet of content
+  context        String?  // surrounding context for reranking
+  bookmark       Bookmark @relation(fields: [bookmarkId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@index([bookmarkId])
+  @@index([passageType])
 }
 
 model ImportJob {

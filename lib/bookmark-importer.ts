@@ -1,0 +1,98 @@
+import prisma from '@/lib/db'
+
+/**
+ * Parsed bookmark representation (compatible with Bird, file import, and other sources)
+ */
+export interface ImportedBookmark {
+  tweetId: string
+  text: string
+  authorHandle: string
+  authorName: string
+  tweetCreatedAt: Date | null
+  rawJson: string
+  media?: Array<{
+    type: 'photo' | 'video' | 'gif'
+    url: string
+    thumbnailUrl?: string
+  }>
+}
+
+/**
+ * Result of persisting a batch of bookmarks
+ */
+export interface ImportBatchResult {
+  imported: number
+  skipped: number
+  errors: Array<{
+    tweetId: string
+    reason: string
+  }>
+}
+
+/**
+ * Persist a batch of bookmarks to the database.
+ * Deduplicates on tweetId, creates Bookmark and MediaItem records.
+ * 
+ * @param bookmarks Parsed bookmarks to import
+ * @param source Source identifier ('bookmark', 'like', 'bird', etc.)
+ * @returns Import statistics
+ */
+export async function persistBookmarks(
+  bookmarks: ImportedBookmark[],
+  source: string,
+): Promise<ImportBatchResult> {
+  const result: ImportBatchResult = {
+    imported: 0,
+    skipped: 0,
+    errors: [],
+  }
+
+  for (const bookmark of bookmarks) {
+    try {
+      // Check for duplicates
+      const existing = await prisma.bookmark.findUnique({
+        where: { tweetId: bookmark.tweetId },
+        select: { id: true },
+      })
+
+      if (existing) {
+        result.skipped++
+        continue
+      }
+
+      // Create bookmark
+      const created = await prisma.bookmark.create({
+        data: {
+          tweetId: bookmark.tweetId,
+          text: bookmark.text,
+          authorHandle: bookmark.authorHandle,
+          authorName: bookmark.authorName,
+          tweetCreatedAt: bookmark.tweetCreatedAt,
+          rawJson: bookmark.rawJson,
+          source,
+        },
+      })
+
+      // Create media items if present
+      if (bookmark.media && bookmark.media.length > 0) {
+        await prisma.mediaItem.createMany({
+          data: bookmark.media.map((m) => ({
+            bookmarkId: created.id,
+            type: m.type,
+            url: m.url,
+            thumbnailUrl: m.thumbnailUrl ?? null,
+          })),
+        })
+      }
+
+      result.imported++
+    } catch (err) {
+      result.errors.push({
+        tweetId: bookmark.tweetId,
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  return result
+}
