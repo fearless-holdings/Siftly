@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
+import { cliSpawnEnv } from './cli-env'
 
 const execFileAsync = promisify(execFile)
 
@@ -36,6 +37,7 @@ export async function isCliAvailable(): Promise<boolean> {
     const proc = spawn('claude', ['auth', 'status'], {
       stdio: 'ignore',
       windowsHide: true,
+      env: cliSpawnEnv(),
     })
 
     const timeout = setTimeout(() => {
@@ -75,6 +77,7 @@ export async function claudePrompt(
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024, // 10MB
       windowsHide: true,
+      env: cliSpawnEnv(),
     })
 
     // Parse the JSON output from CLI

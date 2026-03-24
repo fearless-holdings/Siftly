@@ -2,11 +2,11 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react'
 import Link from 'next/link'
-import { Upload, CheckCircle, ChevronRight, Loader2, Copy, Check, ExternalLink, Sparkles, Eye, Tag, Brain, Layers, StopCircle, RefreshCw, Clock, KeyRound, Trash2, AlertCircle, User, LogOut } from 'lucide-react'
+import { Upload, CheckCircle, ChevronRight, Loader2, Copy, Check, ExternalLink, Sparkles, Eye, Tag, Brain, Layers, StopCircle, RefreshCw, KeyRound, AlertCircle, User, LogOut } from 'lucide-react'
 import * as Progress from '@radix-ui/react-progress'
 
 type Step = 1 | 2 | 3
-type Method = 'bookmarklet' | 'console' | 'live'
+type Method = 'bookmarklet' | 'console' | 'live' | 'bird'
 
 interface ImportResult {
   imported: number
@@ -667,6 +667,91 @@ function ConsoleTab({ onFile, importSource }: { onFile: (file: File) => void; im
   )
 }
 
+// ── Bird CLI Tab ──────────────────────────────────────────────────────────────
+
+function BirdTab({ onSynced, importSource }: { onSynced: (result: ImportResult) => void; importSource: 'bookmark' | 'like' }) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleBirdImport() {
+    setError('')
+    setLoading(true)
+    try {
+      const res = await fetch('/api/import/bird', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: importSource }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Bird import failed')
+      onSynced({
+        imported: data.imported ?? 0,
+        skipped: data.skipped ?? 0,
+        total: data.parsed ?? 0,
+        parsed: data.parsed ?? 0,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const sourceLabel = importSource === 'like' ? 'likes' : 'bookmarks'
+
+  return (
+    <div className="space-y-6">
+      <div className="text-xs text-zinc-500 space-y-1.5 bg-zinc-800/50 border border-zinc-700/50 rounded-xl p-4">
+        <p className="text-zinc-300 font-medium text-sm mb-2 flex items-center gap-2">
+          <KeyRound size={14} className="text-indigo-400" />
+          Bird CLI (Local CLI Tool)
+        </p>
+        <p>Use the <code className="text-xs bg-zinc-900 px-1.5 py-0.5 rounded text-indigo-300 font-mono">bird</code> command-line tool to fetch {sourceLabel} directly from your X account, authenticated via your local credentials.</p>
+        <p className="text-zinc-600 mt-1">Requires: Bird CLI installed and X credentials configured locally (<code className="text-xs bg-zinc-900 px-1.5 py-0.5 rounded text-zinc-400 font-mono">bird login</code>)</p>
+      </div>
+
+      <div className="space-y-3">
+        <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4 space-y-3">
+          <p className="text-sm text-zinc-300 font-medium">Steps:</p>
+          <ol className="text-xs text-zinc-400 space-y-2 list-decimal list-inside">
+            <li>Install Bird CLI: <code className="bg-zinc-950 px-1.5 py-0.5 rounded text-zinc-300 font-mono">brew install pkamenarsky/formulae/bird</code></li>
+            <li>Authenticate: Run <code className="bg-zinc-950 px-1.5 py-0.5 rounded text-zinc-300 font-mono">bird login</code> in your terminal</li>
+            <li>Click the button below to fetch {sourceLabel} from your X account</li>
+          </ol>
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-3 p-3.5 rounded-xl bg-red-500/8 border border-red-500/20">
+            <AlertCircle size={15} className="text-red-400 shrink-0" />
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        )}
+
+        <button
+          onClick={handleBirdImport}
+          disabled={loading}
+          className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-zinc-700 text-white font-medium transition-colors flex items-center justify-center gap-2.5"
+        >
+          {loading ? (
+            <>
+              <Loader2 size={16} className="animate-spin" />
+              Fetching {sourceLabel}…
+            </>
+          ) : (
+            <>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              Fetch {sourceLabel} via Bird CLI
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Live Import Tab (OAuth 2.0 PKCE) ─────────────────────────────────────────
 
 interface OAuthStatus {
@@ -885,10 +970,10 @@ function InstructionsStep({ onFile, importSource, onLiveSynced }: { onFile: (fil
   return (
     <div>
       {/* Method tabs */}
-      <div className="flex gap-1 mb-6 p-1 bg-zinc-800 rounded-xl">
+      <div className="flex gap-1 mb-6 p-1 bg-zinc-800 rounded-xl overflow-x-auto">
         <button
           onClick={() => setMethod('live')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+          className={`px-3 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
             method === 'live'
               ? 'bg-zinc-900 text-zinc-100 shadow-sm'
               : 'text-zinc-500 hover:text-zinc-300'
@@ -899,8 +984,18 @@ function InstructionsStep({ onFile, importSource, onLiveSynced }: { onFile: (fil
           <span className="ml-1.5 text-xs text-indigo-400 font-normal">Recommended</span>
         </button>
         <button
+          onClick={() => setMethod('bird')}
+          className={`px-3 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+            method === 'bird'
+              ? 'bg-zinc-900 text-zinc-100 shadow-sm'
+              : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Bird CLI
+        </button>
+        <button
           onClick={() => setMethod('bookmarklet')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+          className={`px-3 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
             method === 'bookmarklet'
               ? 'bg-zinc-900 text-zinc-100 shadow-sm'
               : 'text-zinc-500 hover:text-zinc-300'
@@ -910,7 +1005,7 @@ function InstructionsStep({ onFile, importSource, onLiveSynced }: { onFile: (fil
         </button>
         <button
           onClick={() => setMethod('console')}
-          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+          className={`px-3 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
             method === 'console'
               ? 'bg-zinc-900 text-zinc-100 shadow-sm'
               : 'text-zinc-500 hover:text-zinc-300'
@@ -922,6 +1017,8 @@ function InstructionsStep({ onFile, importSource, onLiveSynced }: { onFile: (fil
 
       {method === 'live' ? (
         <LiveImportTab onSynced={onLiveSynced} />
+      ) : method === 'bird' ? (
+        <BirdTab onSynced={onLiveSynced} importSource={importSource} />
       ) : method === 'bookmarklet' ? (
         <BookmarkletTab onFile={onFile} importSource={importSource} />
       ) : (

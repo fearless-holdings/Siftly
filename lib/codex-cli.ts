@@ -4,6 +4,7 @@ import { readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
+import { cliSpawnEnv } from './cli-env'
 
 const execFileAsync = promisify(execFile)
 
@@ -23,6 +24,7 @@ export async function isCodexCliAvailable(): Promise<boolean> {
     const proc = spawn('codex', ['--version'], {
       stdio: 'ignore',
       windowsHide: true,
+      env: cliSpawnEnv(),
     })
     const timeout = setTimeout(() => { proc.kill(); resolve(false) }, 5000)
     proc.on('close', (code) => { clearTimeout(timeout); resolve(code === 0) })
@@ -49,6 +51,7 @@ export async function codexPrompt(
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
+      env: cliSpawnEnv(),
     })
 
     // Read the captured output
