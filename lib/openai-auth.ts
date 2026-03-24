@@ -2,6 +2,9 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import OpenAI from 'openai'
+import { ensureServerEnvLoaded } from './env-loader'
+
+ensureServerEnvLoaded()
 
 interface CodexAuth {
   auth_mode?: string

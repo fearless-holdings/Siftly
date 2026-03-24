@@ -3,6 +3,9 @@ import OpenAI from 'openai'
 import { resolveAnthropicClient } from './claude-cli-auth'
 import { resolveOpenAIClient } from './openai-auth'
 import { acpPrompt } from './acp-completion'
+import { ensureServerEnvLoaded } from './env-loader'
+
+ensureServerEnvLoaded()
 
 export interface AIContentBlock {
   type: 'text' | 'image'

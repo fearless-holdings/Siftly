@@ -3,6 +3,9 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import Anthropic from '@anthropic-ai/sdk'
+import { ensureServerEnvLoaded } from './env-loader'
+
+ensureServerEnvLoaded()
 
 // Re-export CLI utilities for text-based tasks
 export { claudePrompt, getCliAvailability, modelNameToCliAlias } from './claude-cli'

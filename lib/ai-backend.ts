@@ -2,6 +2,9 @@ import prisma from '@/lib/db'
 import { getCliAuthStatus, getCliAvailability } from '@/lib/claude-cli-auth'
 import { getCodexCliAuthStatus, getCodexCliAvailability } from '@/lib/openai-auth'
 import { AIClient, type ResolvableBackend, resolveAIClientForBackend } from './ai-client'
+import { ensureServerEnvLoaded } from './env-loader'
+
+ensureServerEnvLoaded()
 
 export type AiBackendId = ResolvableBackend
 export type LegacyProvider = 'anthropic' | 'openai'
